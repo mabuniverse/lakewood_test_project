@@ -1,440 +1,739 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lakewood Footprint & Parcel Mapper</title>
-  
-  <!-- Leaflet CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  
-  <style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Building Footprint Tool</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  :root {
+    --bg: #F0EFE3;
+    --surface: #FBFAF3;
+    --ink: #22261C;
+    --ink-soft: #5B5F4F;
+    --ink-faint: #8B8E7B;
+    --line: #DAD8C4;
+    --accent: #A6741E;
+    --accent-ink: #6E4C14;
+    --accent-soft: #EFE1BE;
+    --teal: #3D6B62;
+    --teal-soft: #DCE9E4;
+    --good: #4C7A4E;
+    --good-soft: #DFEBDC;
+    --danger: #A23A2C;
+    --danger-soft: #F3DCD5;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
     :root {
-      --bg-dark: #121212;
-      --panel-bg: #1c1a17;
-      --panel-card: #25221e;
-      --accent-green: #52b788;
-      --accent-green-hover: #40916c;
-      --accent-red: #A23A2C;
-      --text-main: #f0f0f0;
-      --text-muted: #d4c5b9;
-      --ink-faint: #888078;
-      --border-color: #332f2b;
-      --input-bg: #141311;
+      --bg: #1B1D15; --surface: #23261C; --ink: #EBE9DC; --ink-soft: #B7B6A4; --ink-faint: #82836F;
+      --line: #3A3D2E; --accent: #D6A94E; --accent-ink: #F0D89C; --accent-soft: #3A3018;
+      --teal: #7FB0A4; --teal-soft: #223229; --good: #8FC08C; --good-soft: #223522;
+      --danger: #E08B78; --danger-soft: #3A241E;
     }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+  #app { display: flex; flex-direction: column; height: 100vh; }
 
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--line);
+    flex: none;
+  }
+  header .title { display: flex; flex-direction: column; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+  header .sub { font-size: 12px; color: var(--ink-faint); }
 
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: var(--bg-dark);
-      color: var(--text-main);
-      display: flex;
-      height: 100vh;
-      overflow: hidden;
-    }
+  #layout { flex: 1; display: flex; min-height: 0; }
+  #map { flex: 1 1 auto; min-width: 0; background: #f8f9fa; cursor: crosshair; }
 
-    #map {
-      flex: 1;
-      height: 100%;
-      z-index: 1;
-    }
+  #sidebar {
+    width: 360px; flex: none; background: var(--surface); border-left: 1px solid var(--line);
+    display: flex; flex-direction: column; overflow-y: auto;
+  }
+  .panel { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .panel h2 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); margin: 0 0 10px; }
 
-    #sidebar {
-      width: 380px;
-      background-color: var(--panel-bg);
-      border-left: 1px solid var(--border-color);
-      display: flex;
-      flex-direction: column;
-      z-index: 2;
-      box-shadow: -2px 0 10px rgba(0,0,0,0.5);
-    }
+  label.field-label { display: block; font-size: 12px; color: var(--ink-soft); margin-bottom: 4px; }
+  input[type="text"], input[type="number"] {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--ink); font-size: 13.5px; margin-bottom: 10px;
+  }
+  input:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
 
-    .sidebar-content {
-      padding: 20px;
-      overflow-y: auto;
-      flex: 1;
-    }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
 
-    .section {
-      margin-bottom: 20px;
-      background: var(--panel-card);
-      padding: 16px;
-      border-radius: 8px;
-      border: 1px solid var(--border-color);
-    }
+  button.btn {
+    padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink); font-size: 13px; cursor: pointer; font-weight: 500;
+  }
+  button.btn:hover { border-color: var(--teal); }
+  button.btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
+  button.btn.primary:hover { opacity: .9; }
+  button.btn.danger { color: var(--danger); }
+  button.btn:disabled { opacity: .45; cursor: not-allowed; }
 
-    .section-title {
-      font-size: 0.75rem;
-      font-weight: 700;
-      color: var(--text-muted);
-      margin-bottom: 10px;
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-    }
+  .hint { font-size: 12px; color: var(--ink-faint); margin-top: -4px; margin-bottom: 8px; }
 
-    label {
-      display: block;
-      font-size: 0.85rem;
-      margin-bottom: 6px;
-      color: var(--text-muted);
-    }
+  #trace-panel { display: none; }
+  #trace-panel.active { display: block; }
+  .area-readout { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
+  .area-readout .unit { font-size: 13px; font-weight: 500; color: var(--ink-faint); }
+  .area-sub { font-size: 12px; color: var(--ink-faint); margin-bottom: 10px; }
 
-    input[type="number"], input[type="text"] {
-      width: 100%;
-      padding: 10px 12px;
-      background: var(--input-bg);
-      border: 1px solid var(--border-color);
-      border-radius: 6px;
-      color: #fff;
-      font-size: 0.95rem;
-    }
+  .flag-badge {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600;
+    padding: 5px 10px; border-radius: 100px; margin-bottom: 12px;
+  }
+  .flag-badge.yes { background: var(--good-soft); color: var(--good); }
+  .flag-badge.no { background: var(--line); color: var(--ink-soft); }
 
-    input[type="number"]:focus, input[type="text"]:focus {
-      outline: none;
-      border-color: var(--accent-green);
-    }
+  #draw-status { font-size: 12.5px; background: var(--accent-soft); color: var(--accent-ink);
+    border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
 
-    .btn {
-      width: 100%;
-      padding: 11px 15px;
-      border: none;
-      border-radius: 6px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      font-size: 0.9rem;
-    }
+  table#log-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table#log-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint); padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  table#log-table td { padding: 7px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table#log-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table#log-table tr.flagged td.num { color: var(--good); font-weight: 700; }
+  table#log-table button.del { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 12px; padding: 2px; }
+  #log-empty { font-size: 12.5px; color: var(--ink-faint); padding: 4px; }
 
-    .btn.primary {
-      background-color: #88b0a0;
-      color: #121212;
-    }
+  #export-row { padding: 12px 16px; }
 
-    .btn.primary:hover {
-      background-color: var(--accent-green);
-    }
+  .vertex-icon {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #fff; border: 2px solid var(--teal); box-shadow: 0 0 0 2px rgba(0,0,0,.25);
+    cursor: grab;
+  }
 
-    .btn.secondary {
-      background-color: #2b2723;
-      color: #f0f0f0;
-      border: 1px solid var(--border-color);
-    }
+  #boundary-status, #muni-status, #scan-status {
+    font-size: 12.5px; color: var(--ink-soft); margin-bottom: 10px; line-height: 1.5;
+  }
+  .legend-swatches { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .legend-row .who { color: var(--ink-faint); }
 
-    .btn.secondary:hover {
-      background-color: #38332e;
-    }
-
-    .status-box {
-      font-size: 0.82rem;
-      color: var(--text-muted);
-      line-height: 1.45;
-    }
-
-    .stat-display {
-      font-size: 2.2rem;
-      font-weight: 700;
-      color: #fff;
-      line-height: 1.1;
-      margin: 4px 0;
-    }
-
-    .stat-display span {
-      font-size: 1rem;
-      font-weight: 400;
-      color: var(--text-muted);
-    }
-
-    .badge-success {
-      display: inline-block;
-      margin-top: 6px;
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 0.8rem;
-      font-weight: 600;
-      background: rgba(82, 183, 136, 0.15);
-      color: var(--accent-green);
-      border: 1px solid var(--accent-green);
-    }
-
-    .popup-flagged {
-      color: #121212;
-      font-size: 0.85rem;
-      line-height: 1.4;
-    }
-
-    .popup-flagged .btn {
-      margin-top: 8px;
-      padding: 6px 10px;
-    }
-  </style>
+  .quadrant-label {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 100px;
+    color: #fff; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    border: 2px solid rgba(255,255,255,.8);
+  }
+  .caveat {
+    font-size: 12px; color: var(--accent-ink); background: var(--accent-soft);
+    border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; line-height: 1.5;
+  }
+  .popup-flagged { font-size: 12.5px; line-height: 1.5; }
+  .popup-flagged button.btn { margin-top: 6px; width: 100%; font-size: 12px; padding: 6px 8px; }
+</style>
 </head>
 <body>
+<div id="app">
+  <header>
+    <div class="title">
+      <h1>Building Footprint & Zoning Tool</h1>
+      <span class="sub">Clean Vector Map Mode &rarr; Trace, view municipal limits, & scan buildings</span>
+    </div>
+  </header>
 
-  <div id="map"></div>
+  <div id="layout">
+    <div id="map"></div>
 
-  <div id="sidebar">
-    <div class="sidebar-content">
-      
-      <!-- Threshold Section -->
-      <div class="section">
-        <label for="threshold-input">Minimum sq ft to flag</label>
-        <input type="number" id="threshold-input" value="10000" step="500">
+    <div id="sidebar">
+      <div class="panel">
+        <h2>Find a building</h2>
+        <label class="field-label" for="address-input">Address</label>
+        <input type="text" id="address-input" placeholder="e.g. 1855 Denver W Ct, Lakewood, CO">
+        <div class="row">
+          <button class="btn primary" id="search-btn">Go to address</button>
+          <button class="btn" id="map-style-btn">Style: Light Map</button>
+        </div>
+        <div class="hint">Click points to trace rooftops or shapes. Double-click to finish.</div>
       </div>
 
-      <!-- Auto-Detect Section -->
-      <div class="section">
-        <div class="section-title">AUTO-DETECT BUILDINGS (JEFFCO ASSESSOR DATA)</div>
-        <p class="status-box" style="margin-bottom: 12px;">
-          Queries Jefferson County's parcel feed for recorded building sizes and flags anything at or above your threshold.
-        </p>
-        <button class="btn primary" id="scan-btn">Scan current view for buildings</button>
-        <div id="scan-status" class="status-box" style="margin-top: 10px;"></div>
+      <div class="panel">
+        <h2>Municipal Boundary</h2>
+        <label class="field-label" for="muni-input">Municipality / City</label>
+        <input type="text" id="muni-input" value="Lakewood, Colorado">
+        <button class="btn primary" id="muni-btn" style="width:100%;">Toggle Municipal Limit</button>
+        <div id="muni-status" style="margin-top:8px;">Shows the red dashed city limits.</div>
       </div>
 
-      <!-- Tracing Controls Section -->
-      <div class="section">
-        <div class="section-title">TRACING</div>
-        <p id="trace-status" class="status-box" style="margin-bottom: 12px;">
-          Click points on the map to manually trace a custom footprint shape.
-        </p>
-        <div style="display: flex; gap: 10px;">
-          <button class="btn secondary" id="undo-btn">Undo point</button>
-          <button class="btn primary" id="finish-btn">Finish shape</button>
+      <div class="panel">
+        <h2>Section boundaries</h2>
+        <div id="boundary-status">Shows the Kipling St / 6th Ave section dividers and assigned quadrants instantly.</div>
+        <button class="btn primary" id="boundary-btn" style="width:100%;">Toggle section boundaries</button>
+        <div class="legend-swatches" style="margin-top:10px;">
+          <div class="legend-row"><span class="legend-dot" style="background:#E8C33D;"></span>Yellow <span class="who">&mdash; you (Mabell)</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#8B5E3C;"></span>Brown <span class="who">&mdash; Ken</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#3355CC;"></span>Blue <span class="who">&mdash; Myles</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#2E9E4E;"></span>Green <span class="who">&mdash; Kylie</span></div>
         </div>
       </div>
 
-      <!-- Current Trace Stats Section -->
-      <div class="section">
-        <div class="section-title">CURRENT TRACE</div>
-        <div id="trace-area" class="stat-display">0 <span>sq ft</span></div>
-        <div id="trace-metric" class="status-box" style="margin-bottom: 8px;">0 m²</div>
-        <div id="trace-badge"></div>
-        
-        <div style="margin-top: 16px;">
-          <label for="address-input">Address / label</label>
-          <input type="text" id="address-input" placeholder="matches search above">
+      <div class="panel">
+        <h2>Flag threshold</h2>
+        <label class="field-label" for="threshold-input">Minimum sq ft to flag</label>
+        <input type="number" id="threshold-input" value="10000" step="500" min="0">
+      </div>
+
+      <div class="panel">
+        <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(JEFFCO ASSESSOR DATA)</span></h2>
+        <div class="caveat">Queries Jefferson County's parcel feed for recorded building sizes and flags anything at or above your threshold.</div>
+        <button class="btn primary" id="scan-btn" style="width:100%;">Scan current view for buildings</button>
+        <div id="scan-status" style="margin-top:8px;"></div>
+      </div>
+
+      <div class="panel" id="drawing-panel">
+        <h2>Tracing</h2>
+        <div id="draw-status">Click on the map to start tracing a rooftop.</div>
+        <div class="row">
+          <button class="btn" id="undo-point-btn" disabled>Undo point</button>
+          <button class="btn primary" id="finish-shape-btn" disabled>Finish shape</button>
         </div>
       </div>
 
+      <div class="panel" id="trace-panel">
+        <h2>Current trace</h2>
+        <div class="area-readout"><span id="area-value">0</span> <span class="unit">sq ft</span></div>
+        <div class="area-sub"><span id="area-sqm">0</span> m&sup2;</div>
+        <div id="flag-badge" class="flag-badge no">below threshold</div>
+        <label class="field-label" for="label-input">Address / label</label>
+        <input type="text" id="label-input" placeholder="matches search above">
+        <label class="field-label" for="note-input">Note</label>
+        <input type="text" id="note-input" placeholder="e.g. 2 stories, single occupant">
+        <div class="row">
+          <button class="btn primary" id="save-trace-btn">Save to list</button>
+          <button class="btn danger" id="discard-trace-btn">Discard</button>
+        </div>
+      </div>
+
+      <div class="panel" style="flex:1; border-bottom:none;">
+        <h2>Measured buildings</h2>
+        <div id="log-empty">Nothing saved yet &mdash; trace a rooftop to get started.</div>
+        <table id="log-table" style="display:none;">
+          <thead><tr><th>Label</th><th style="text-align:right;">Sq ft</th><th></th></tr></thead>
+          <tbody id="log-body"></tbody>
+        </table>
+      </div>
+
+      <div id="export-row">
+        <button class="btn" id="export-btn" style="width:100%;">Export list as CSV</button>
+      </div>
     </div>
   </div>
+</div>
 
-  <!-- Leaflet JS -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+(function () {
+  var LOG_KEY = 'lakewood-footprint-tool-log-v4';
+  var EARTH_R = 6378137.0;
 
-  <script>
-    // Initialize Map centered on Lakewood, CO
-    var map = L.map('map').setView([39.7150, -105.1320], 16);
+  var map, lightLayer, satelliteLayer, currentBasemap = 'light';
+  var currentPath = [], currentMarkers = [], currentShape = null;
+  var pendingFinished = false, savedEntries = [];
+  var lastSearchedLabel = '';
+  var boundaryGroup = null, boundariesShown = false;
+  var scanGroup = null, muniGroup = null, muniShown = false;
 
-    // Light basemap theme
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '&copy; OpenStreetMap &copy; CARTO',
-      subdomains: 'abcd',
-      maxZoom: 20
+  function geodesicAreaSqm(latlngs) {
+    var n = latlngs.length;
+    if (n < 3) return 0;
+    var d2r = Math.PI / 180, area = 0;
+    for (var i = 0; i < n; i++) {
+      var p1 = latlngs[i], p2 = latlngs[(i + 1) % n];
+      area += ((p2.lng - p1.lng) * d2r) * (2 + Math.sin(p1.lat * d2r) + Math.sin(p2.lat * d2r));
+    }
+    return Math.abs(area * EARTH_R * EARTH_R / 2.0);
+  }
+
+  function initMap() {
+    map = L.map('map', { doubleClickZoom: false, maxZoom: 21 }).setView([39.715, -105.109], 13);
+
+    lightLayer = L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+      { maxZoom: 21, maxNativeZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>' }
+    ).addTo(map);
+
+    satelliteLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imagery &copy; Esri, Maxar' }
+    );
+
+    map.on('click', onMapClick);
+    map.on('dblclick', function () { finishShape(); });
+
+    boundaryGroup = L.layerGroup();
+    scanGroup = L.layerGroup().addTo(map);
+    muniGroup = L.layerGroup().addTo(map);
+
+    document.getElementById('muni-btn').addEventListener('click', toggleMunicipalBoundary);
+    document.getElementById('boundary-btn').addEventListener('click', toggleSectionBoundaries);
+    document.getElementById('scan-btn').addEventListener('click', scanVisibleArea);
+    document.getElementById('map-style-btn').addEventListener('click', toggleMapStyle);
+
+    loadLog();
+    renderLog();
+    loadMunicipalBoundary('Lakewood, Colorado');
+  }
+
+  function toggleMapStyle() {
+    var btn = document.getElementById('map-style-btn');
+    if (currentBasemap === 'light') {
+      map.removeLayer(lightLayer);
+      satelliteLayer.addTo(map);
+      currentBasemap = 'satellite';
+      btn.textContent = 'Style: Satellite';
+    } else {
+      map.removeLayer(satelliteLayer);
+      lightLayer.addTo(map);
+      currentBasemap = 'light';
+      btn.textContent = 'Style: Light Map';
+    }
+  }
+
+  function onMapClick(e) {
+    if (pendingFinished) return;
+    addVertex(e.latlng);
+  }
+
+  function addVertex(latlng) {
+    currentPath.push(latlng);
+    var marker = L.marker(latlng, {
+      draggable: true,
+      icon: L.divIcon({ className: 'vertex-icon', iconSize: [12, 12] })
     }).addTo(map);
+    var idx = currentMarkers.length;
+    marker.on('drag', function () {
+      currentPath[idx] = marker.getLatLng();
+      redrawShape();
+      updateLiveArea();
+    });
+    currentMarkers.push(marker);
+    redrawShape();
+    updateLiveArea();
+    updateDrawStatus();
+  }
 
-    // Feature Overlay Groups
-    var scanGroup = L.featureGroup().addTo(map);
-    var drawGroup = L.featureGroup().addTo(map);
+  function redrawShape() {
+    if (currentShape) { map.removeLayer(currentShape); currentShape = null; }
+    if (currentPath.length === 0) return;
+    var style = { color: '#3D6B62', weight: 2, fillColor: '#3D6B62', fillOpacity: 0.25 };
+    if (currentPath.length < 3) {
+      currentShape = L.polyline(currentPath, style).addTo(map);
+    } else {
+      currentShape = L.polygon(currentPath, style).addTo(map);
+    }
+  }
 
-    // Manual Tracing State
-    var activePoints = [];
-    var activePolyline = null;
-    var activePolygon = null;
+  function updateDrawStatus() {
+    var n = currentPath.length;
+    var status = document.getElementById('draw-status');
+    var undoBtn = document.getElementById('undo-point-btn');
+    var finishBtn = document.getElementById('finish-shape-btn');
+    undoBtn.disabled = n === 0;
+    finishBtn.disabled = n < 3;
+    if (n === 0) status.textContent = 'Click on the map to start tracing a rooftop.';
+    else if (n < 3) status.textContent = n + ' point(s) placed — add at least ' + (3 - n) + ' more.';
+    else status.textContent = n + ' points placed. Keep going, or click Finish shape / double-click the map.';
+  }
 
-    // --- Fixed Auto-Detect Scan Function ---
-    function scanVisibleArea() {
-      var statusEl = document.getElementById('scan-status');
-      var b = map.getBounds();
-      var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
+  function updateLiveArea() {
+    if (currentPath.length < 3) return;
+    var sqm = geodesicAreaSqm(currentPath);
+    reflectArea(sqm);
+  }
 
-      statusEl.textContent = 'Querying Jefferson County building footprints...';
-      scanGroup.clearLayers();
+  function reflectArea(sqm) {
+    var sqft = sqm * 10.76391;
+    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
+    document.getElementById('area-value').textContent = Math.round(sqft).toLocaleString();
+    document.getElementById('area-sqm').textContent = Math.round(sqm).toLocaleString();
+    var badge = document.getElementById('flag-badge');
+    if (sqft >= threshold) {
+      badge.className = 'flag-badge yes';
+      badge.textContent = '✓ at or above ' + threshold.toLocaleString() + ' sq ft';
+    } else {
+      badge.className = 'flag-badge no';
+      badge.textContent = 'below ' + threshold.toLocaleString() + ' sq ft threshold';
+    }
+    return sqft;
+  }
 
-      var baseUrl = 'https://services2.arcgis.com/839z1P1Sg5R636Y3/arcgis/rest/services/Jefferson_County_Parcels/FeatureServer/20/query';
-      
-      // Construct Bounding Box Geometry Envelope
-      var bbox = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(',');
-      
-      // Fully encoded URL string to fix "Invalid URL" error
-      var fullUrl = baseUrl + 
-        '?where=' + encodeURIComponent('STTGRSAREA>=' + threshold) +
-        '&geometry=' + encodeURIComponent(bbox) +
-        '&geometryType=esriGeometryEnvelope' +
-        '&inSR=4326' +
-        '&spatialRel=esriSpatialRelIntersects' +
-        '&outFields=' + encodeURIComponent('PIN,PARCELID,PRPADDRESS,STTYRBLT,STTTYPUSE,STTGRSAREA,OWNNAM') +
-        '&returnGeometry=true' +
-        '&outSR=4326' +
-        '&f=json';
+  function finishShape() {
+    if (currentPath.length < 3 || pendingFinished) return;
+    pendingFinished = true;
+    document.getElementById('trace-panel').classList.add('active');
+    document.getElementById('label-input').value = lastSearchedLabel;
+    document.getElementById('note-input').value = '';
+    updateLiveArea();
+  }
 
-      fetch(fullUrl)
-        .then(function (r) {
-          if (!r.ok) throw new Error('HTTP ' + r.status);
-          return r.json();
-        })
-        .then(function (data) {
-          if (data.error) throw new Error(data.error.message || 'ArcGIS Query Error');
-          var features = data.features || [];
+  document.getElementById('finish-shape-btn').addEventListener('click', finishShape);
 
-          if (features.length === 0) {
-            statusEl.textContent = 'Scan complete: No footprints found matching ≥ ' + threshold.toLocaleString() + ' sq ft in this exact view.';
-            return;
+  document.getElementById('undo-point-btn').addEventListener('click', function () {
+    if (pendingFinished || !currentPath.length) return;
+    currentPath.pop();
+    var m = currentMarkers.pop();
+    if (m) map.removeLayer(m);
+    redrawShape();
+    updateDrawStatus();
+    if (currentPath.length >= 3) updateLiveArea();
+  });
+
+  document.getElementById('threshold-input').addEventListener('input', function () {
+    if (pendingFinished && currentPath.length >= 3) updateLiveArea();
+  });
+
+  function clearCurrentTrace() {
+    currentMarkers.forEach(function (m) { map.removeLayer(m); });
+    if (currentShape) map.removeLayer(currentShape);
+    currentPath = []; currentMarkers = []; currentShape = null;
+    pendingFinished = false;
+    document.getElementById('trace-panel').classList.remove('active');
+    updateDrawStatus();
+  }
+
+  document.getElementById('discard-trace-btn').addEventListener('click', clearCurrentTrace);
+
+  function commitEntry(latlngs, label, note) {
+    var sqm = geodesicAreaSqm(latlngs);
+    var sqft = sqm * 10.76391;
+    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
+    var flagged = sqft >= threshold;
+    var path = latlngs.map(function (p) { return { lat: p.lat, lng: p.lng }; });
+    var frozen = L.polygon(path.map(function (p) { return [p.lat, p.lng]; }), {
+      color: flagged ? '#4C7A4E' : '#8B8E7B',
+      fillColor: flagged ? '#4C7A4E' : '#8B8E7B',
+      weight: 2, fillOpacity: 0.35
+    }).addTo(map);
+    savedEntries.push({ label: label, note: note, sqft: sqft, sqm: sqm, flagged: flagged, path: path, layer: frozen });
+    persistLog();
+    renderLog();
+    return { sqft: sqft, flagged: flagged };
+  }
+
+  document.getElementById('save-trace-btn').addEventListener('click', function () {
+    if (!pendingFinished) return;
+    if (currentShape) map.removeLayer(currentShape);
+    commitEntry(
+      currentPath,
+      document.getElementById('label-input').value.trim(),
+      document.getElementById('note-input').value.trim()
+    );
+    currentMarkers.forEach(function (m) { map.removeLayer(m); });
+    currentPath = []; currentMarkers = []; currentShape = null; pendingFinished = false;
+    document.getElementById('trace-panel').classList.remove('active');
+    updateDrawStatus();
+  });
+
+  function loadLog() {
+    var raw = [];
+    try { raw = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); } catch (e) { raw = []; }
+    savedEntries = raw.map(function (e) {
+      var layer = null;
+      if (e.path && e.path.length) {
+        layer = L.polygon(e.path, {
+          color: e.flagged ? '#4C7A4E' : '#8B8E7B',
+          fillColor: e.flagged ? '#4C7A4E' : '#8B8E7B',
+          weight: 2, fillOpacity: 0.35
+        }).addTo(map);
+      }
+      e.layer = layer;
+      return e;
+    });
+  }
+
+  function persistLog() {
+    try {
+      var safe = JSON.stringify(savedEntries, function (key, value) {
+        if (key === 'layer') return undefined;
+        return value;
+      });
+      localStorage.setItem(LOG_KEY, safe);
+    } catch (e) {}
+  }
+
+  function renderLog() {
+    var body = document.getElementById('log-body');
+    var table = document.getElementById('log-table');
+    var empty = document.getElementById('log-empty');
+    body.innerHTML = '';
+    if (!savedEntries.length) {
+      table.style.display = 'none';
+      empty.style.display = 'block';
+      return;
+    }
+    table.style.display = '';
+    empty.style.display = 'none';
+    savedEntries.forEach(function (entry, i) {
+      var tr = document.createElement('tr');
+      if (entry.flagged) tr.className = 'flagged';
+      var tdLabel = document.createElement('td');
+      tdLabel.textContent = entry.label || '(unlabeled)';
+      if (entry.note) {
+        var small = document.createElement('div');
+        small.style.color = 'var(--ink-faint)'; small.style.fontSize = '11px';
+        small.textContent = entry.note;
+        tdLabel.appendChild(small);
+      }
+      var tdArea = document.createElement('td');
+      tdArea.className = 'num';
+      tdArea.textContent = Math.round(entry.sqft).toLocaleString();
+      var tdDel = document.createElement('td');
+      var delBtn = document.createElement('button');
+      delBtn.className = 'del'; delBtn.textContent = 'remove';
+      delBtn.addEventListener('click', function () {
+        if (entry.layer) map.removeLayer(entry.layer);
+        savedEntries.splice(i, 1);
+        persistLog();
+        renderLog();
+      });
+      tdDel.appendChild(delBtn);
+      tr.appendChild(tdLabel); tr.appendChild(tdArea); tr.appendChild(tdDel);
+      body.appendChild(tr);
+    });
+  }
+
+  document.getElementById('export-btn').addEventListener('click', function () {
+    if (!savedEntries.length) { alert('Nothing saved yet.'); return; }
+    var rows = [['Label', 'Sq Ft', 'Sq M', 'Flagged (>= threshold)', 'Note']];
+    savedEntries.forEach(function (e) {
+      rows.push([e.label || '', Math.round(e.sqft), Math.round(e.sqm), e.flagged ? 'Yes' : 'No', e.note || '']);
+    });
+    var csv = rows.map(function (r) {
+      return r.map(function (v) {
+        var s = String(v).replace(/"/g, '""');
+        return /[",\n]/.test(s) ? '"' + s + '"' : s;
+      }).join(',');
+    }).join('\n');
+    var blob = new Blob([csv], { type: 'text/csv' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = 'lakewood-measured-buildings.csv';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  function doSearch() {
+    var q = document.getElementById('address-input').value.trim();
+    if (!q) return;
+    lastSearchedLabel = q;
+    var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q);
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (results) {
+        if (results && results.length) {
+          var lat = parseFloat(results[0].lat), lon = parseFloat(results[0].lon);
+          map.setView([lat, lon], 19);
+        } else {
+          alert('Address not found. Try zooming/panning manually.');
+        }
+      })
+      .catch(function () {
+        alert('Network lookup failed. Zoom/pan to address manually.');
+      });
+  }
+
+  document.getElementById('search-btn').addEventListener('click', doSearch);
+  document.getElementById('address-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') doSearch();
+  });
+
+  function loadMunicipalBoundary(query) {
+    var statusEl = document.getElementById('muni-status');
+    var targetQuery = query || document.getElementById('muni-input').value.trim();
+    if (!targetQuery) return;
+
+    statusEl.textContent = 'Loading municipal boundary...';
+    muniGroup.clearLayers();
+
+    var url = 'https://nominatim.openstreetmap.org/search?format=json&polygon_geojson=1&q=' + encodeURIComponent(targetQuery);
+
+    fetch(url)
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var match = data.find(function (d) { 
+          return d.geojson && (d.geojson.type === 'Polygon' || d.geojson.type === 'MultiPolygon'); 
+        }) || data[0];
+
+        if (match && match.geojson) {
+          L.geoJSON(match.geojson, {
+            style: { color: '#d93025', weight: 2, dashArray: '6, 6', fillColor: '#d93025', fillOpacity: 0.05 }
+          }).addTo(muniGroup);
+          muniShown = true;
+          statusEl.textContent = 'Loaded municipal boundary line.';
+        } else {
+          statusEl.textContent = 'No polygon available for boundary search.';
+        }
+      })
+      .catch(function () {
+        statusEl.textContent = 'Failed to load municipal line (network error).';
+      });
+  }
+
+  function toggleMunicipalBoundary() {
+    if (muniShown) {
+      muniGroup.clearLayers();
+      muniShown = false;
+      document.getElementById('muni-status').textContent = 'Municipal border hidden.';
+    } else {
+      loadMunicipalBoundary();
+    }
+  }
+
+  function toggleSectionBoundaries() {
+    var btn = document.getElementById('boundary-btn');
+    var statusEl = document.getElementById('boundary-status');
+
+    if (boundariesShown) {
+      boundaryGroup.clearLayers();
+      map.removeLayer(boundaryGroup);
+      boundariesShown = false;
+      btn.textContent = 'Show section boundaries';
+      statusEl.textContent = 'Section boundaries hidden.';
+      return;
+    }
+
+    boundaryGroup.clearLayers();
+
+    var kiplingLine = L.polyline([
+      [39.8000, -105.1097],
+      [39.6000, -105.1097]
+    ], { color: '#1a1a1a', weight: 4, dashArray: '6, 6', opacity: 0.85 }).bindTooltip("Kipling St Divider", { sticky: true });
+
+    var sixthLine = L.polyline([
+      [39.7257, -105.2000],
+      [39.7257, -105.0000]
+    ], { color: '#1a1a1a', weight: 4, dashArray: '6, 6', opacity: 0.85 }).bindTooltip("6th Ave Divider", { sticky: true });
+
+    boundaryGroup.addLayer(kiplingLine);
+    boundaryGroup.addLayer(sixthLine);
+
+    var QUADRANTS = [
+      { lat: 39.7450, lng: -105.1350, color: '#2E9E4E', text: 'Green · Kylie (NW)' },
+      { lat: 39.7450, lng: -105.0800, color: '#3355CC', text: 'Blue · Myles (NE)' },
+      { lat: 39.7050, lng: -105.1350, color: '#E8C33D', text: 'Yellow · You / Mabell (SW)' },
+      { lat: 39.7050, lng: -105.0800, color: '#8B5E3C', text: 'Brown · Ken (SE)' }
+    ];
+
+    QUADRANTS.forEach(function (q) {
+      var marker = L.marker([q.lat, q.lng], {
+        icon: L.divIcon({
+          className: '',
+          html: '<div class="quadrant-label" style="background:' + q.color + ';">' + q.text + '</div>',
+          iconSize: null
+        }),
+        interactive: false
+      });
+      boundaryGroup.addLayer(marker);
+    });
+
+    boundaryGroup.addTo(map);
+    boundariesShown = true;
+    btn.textContent = 'Hide section boundaries';
+    statusEl.textContent = 'Section dividers (Kipling / 6th Ave) and team quadrants displayed.';
+  }
+
+  function scanVisibleArea() {
+    var statusEl = document.getElementById('scan-status');
+    var b = map.getBounds();
+    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
+
+    statusEl.textContent = 'Querying Jefferson County building footprints...';
+    scanGroup.clearLayers();
+
+    var baseUrl = 'https://services2.arcgis.com/839z1P1Sg5R636Y3/arcgis/rest/services/Jefferson_County_Parcels/FeatureServer/20/query';
+    
+    var params = new URLSearchParams({
+      where: 'STTGRSAREA >= ' + threshold,
+      geometry: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(','),
+      geometryType: 'esriGeometryEnvelope',
+      inSR: '4326',
+      spatialRel: 'esriSpatialRelIntersects',
+      outFields: 'PIN,PARCELID,PRPADDRESS,STTYRBLT,STTTYPUSE,STTGRSAREA,OWNNAM',
+      returnGeometry: 'true',
+      outSR: '4326',
+      f: 'json'
+    });
+
+    function fetchWithFallback(primaryUrl) {
+      return fetch(primaryUrl).catch(function () {
+        var corsProxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(primaryUrl);
+        return fetch(corsProxyUrl);
+      });
+    }
+
+    fetchWithFallback(baseUrl + '?' + params.toString())
+      .then(function (r) {
+        if (!r.ok) throw new Error('Server returned HTTP status ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        if (data.error) throw new Error(data.error.message || 'ArcGIS Query Error');
+        var features = data.features || [];
+
+        if (features.length === 0) {
+          statusEl.textContent = 'Scan complete: No footprints found matching ≥ ' + threshold.toLocaleString() + ' sq ft in this exact view.';
+          return;
+        }
+
+        var count = 0;
+        features.forEach(function (f) {
+          if (!f.geometry || (!f.geometry.rings && !f.geometry.coordinates)) return;
+          count++;
+
+          var latlngs = [];
+          if (f.geometry.rings) {
+            latlngs = f.geometry.rings[0].map(function(pt) { return [pt[1], pt[0]]; });
+          } else if (f.geometry.coordinates) {
+            latlngs = f.geometry.coordinates[0].map(function(pt) { return [pt[1], pt[0]]; });
           }
 
-          var count = 0;
-          features.forEach(function (f) {
-            if (!f.geometry) return;
+          var attrs = f.attributes || {};
+          var sqft = attrs.STTGRSAREA || 0;
+          var addr = (attrs.PRPADDRESS || 'Unknown Address').trim();
 
-            var latlngs = [];
-            if (f.geometry.rings) {
-              latlngs = f.geometry.rings[0].map(function(pt) { return [pt[1], pt[0]]; });
-            } else if (f.geometry.coordinates) {
-              latlngs = f.geometry.coordinates[0].map(function(pt) { return [pt[1], pt[0]]; });
-            }
+          var poly = L.polygon(latlngs, {
+            color: '#A23A2C', fillColor: '#A23A2C', weight: 2, fillOpacity: 0.4
+          }).addTo(scanGroup);
 
-            if (latlngs.length === 0) return;
-            count++;
+          var popupDiv = document.createElement('div');
+          popupDiv.className = 'popup-flagged';
+          popupDiv.innerHTML =
+            '<strong>' + Math.round(sqft).toLocaleString() + ' sq ft</strong><br>' +
+            addr + '<br>' +
+            '<span style="font-size:11px; color:var(--ink-faint);">Built ' + (attrs.STTYRBLT || 'N/A') + ' · ' + (attrs.STTTYPUSE || '') + '</span><br>';
 
-            var attrs = f.attributes || {};
-            var sqft = attrs.STTGRSAREA || 0;
-            var addr = (attrs.PRPADDRESS || 'Unknown Address').trim();
-
-            var poly = L.polygon(latlngs, {
-              color: '#A23A2C',
-              fillColor: '#A23A2C',
-              weight: 2,
-              fillOpacity: 0.4
-            }).addTo(scanGroup);
-
-            var popupDiv = document.createElement('div');
-            popupDiv.className = 'popup-flagged';
-            popupDiv.innerHTML =
-              '<strong>' + Math.round(sqft).toLocaleString() + ' sq ft</strong><br>' +
-              addr + '<br>' +
-              '<span style="font-size:11px; color:#666;">Built ' + (attrs.STTYRBLT || 'N/A') + ' · ' + (attrs.STTTYPUSE || '') + '</span><br>';
-
-            var btn = document.createElement('button');
-            btn.className = 'btn primary';
-            btn.textContent = 'Add to my list';
-            btn.addEventListener('click', function () {
-              commitEntry(
-                latlngs.map(function(ll) { return { lat: ll[0], lng: ll[1] }; }),
-                addr,
-                'Assessor data (PIN: ' + (attrs.PIN || 'N/A') + ')'
-              );
-              poly.closePopup();
-            });
-            popupDiv.appendChild(btn);
-            poly.bindPopup(popupDiv);
+          var btn = document.createElement('button');
+          btn.className = 'btn primary';
+          btn.textContent = 'Add to my list';
+          btn.addEventListener('click', function () {
+            commitEntry(
+              latlngs.map(function(ll) { return { lat: ll[0], lng: ll[1] }; }),
+              addr,
+              'Assessor data (PIN: ' + (attrs.PIN || 'N/A') + ')'
+            );
+            poly.closePopup();
           });
-
-          statusEl.textContent = 'Scan complete. Found ' + count + ' structure(s) ≥ ' + threshold.toLocaleString() + ' sq ft.';
-        })
-        .catch(function (err) {
-          statusEl.textContent = 'Scan error: ' + err.message + '. (Try zooming in slightly closer or panning to refresh).';
+          popupDiv.appendChild(btn);
+          poly.bindPopup(popupDiv);
         });
-    }
 
-    // --- Interactive Map Click Tracing ---
-    map.on('click', function(e) {
-      activePoints.push(e.latlng);
-      updateTracingDisplay();
-    });
+        statusEl.textContent = 'Scan complete. Found ' + count + ' structure(s) ≥ ' + threshold.toLocaleString() + ' sq ft.';
+      })
+      .catch(function (err) {
+        statusEl.textContent = 'Scan error: ' + err.message + '. (Try zooming in slightly closer or panning to refresh).';
+      });
+  }
 
-    map.on('dblclick', function(e) {
-      if (activePoints.length >= 3) {
-        var addr = document.getElementById('address-input').value || 'Manual Trace';
-        commitEntry(activePoints, addr, 'Manual Trace');
-        activePoints = [];
-        updateTracingDisplay();
-      }
-    });
-
-    function updateTracingDisplay() {
-      if (activePolyline) map.removeLayer(activePolyline);
-      if (activePolygon) map.removeLayer(activePolygon);
-
-      var count = activePoints.length;
-      var traceStatus = document.getElementById('trace-status');
-
-      if (count === 0) {
-        traceStatus.textContent = 'Click points on the map to manually trace a custom footprint shape.';
-        document.getElementById('trace-area').innerHTML = '0 <span>sq ft</span>';
-        document.getElementById('trace-metric').textContent = '0 m²';
-        document.getElementById('trace-badge').innerHTML = '';
-        return;
-      }
-
-      if (count < 3) {
-        traceStatus.textContent = count + ' point(s) placed. Click at least 3 points to create a polygon.';
-        activePolyline = L.polyline(activePoints, { color: '#52b788', weight: 3 }).addTo(map);
-        document.getElementById('trace-area').innerHTML = '0 <span>sq ft</span>';
-        document.getElementById('trace-metric').textContent = '0 m²';
-        document.getElementById('trace-badge').innerHTML = '';
-      } else {
-        traceStatus.textContent = count + ' points placed. Keep going, or click Finish shape / double-click the map.';
-        activePolygon = L.polygon(activePoints, { color: '#52b788', fillColor: '#52b788', fillOpacity: 0.35, weight: 2 }).addTo(map);
-        
-        var sqMeters = calculatePolygonArea(activePoints);
-        var sqFt = sqMeters * 10.7639;
-        
-        document.getElementById('trace-area').innerHTML = Math.round(sqFt).toLocaleString() + ' <span>sq ft</span>';
-        document.getElementById('trace-metric').textContent = Math.round(sqMeters).toLocaleString() + ' m²';
-
-        var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
-        if (sqFt >= threshold) {
-          document.getElementById('trace-badge').innerHTML = '<span class="badge-success">✓ at or above ' + threshold.toLocaleString() + ' sq ft</span>';
-        } else {
-          document.getElementById('trace-badge').innerHTML = '';
-        }
-      }
-    }
-
-    // Geodesic Area Calculation Algorithm
-    function calculatePolygonArea(latLngs) {
-      if (latLngs.length < 3) return 0;
-      var radius = 6378137;
-      var area = 0;
-
-      for (var i = 0; i < latLngs.length; i++) {
-        var p1 = latLngs[i];
-        var p2 = latLngs[(i + 1) % latLngs.length];
-        area += (p2.lng - p1.lng) * (Math.PI / 180) * (2 + Math.sin(p1.lat * (Math.PI / 180)) + Math.sin(p2.lat * (Math.PI / 180)));
-      }
-      area = area * radius * radius / 2.0;
-      return Math.abs(area);
-    }
-
-    function commitEntry(coords, label, source) {
-      L.polygon(coords, { color: '#52b788', fillColor: '#52b788', fillOpacity: 0.5, weight: 2 }).addTo(drawGroup);
-      alert('Saved shape for: ' + (label || 'Unlabeled shape'));
-    }
-
-    // Event Listeners
-    document.getElementById('scan-btn').addEventListener('click', scanVisibleArea);
-
-    document.getElementById('undo-btn').addEventListener('click', function() {
-      activePoints.pop();
-      updateTracingDisplay();
-    });
-
-    document.getElementById('finish-btn').addEventListener('click', function() {
-      if (activePoints.length < 3) {
-        alert('Please click at least 3 points on the map before finishing a shape.');
-        return;
-      }
-      var addr = document.getElementById('address-input').value || 'Manual Trace';
-      commitEntry(activePoints, addr, 'Manual Trace');
-      activePoints = [];
-      updateTracingDisplay();
-    });
-
-  </script>
+  window.onload = initMap;
+})();
+</script>
 </body>
 </html>
