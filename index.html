@@ -46,7 +46,7 @@
   header .sub { font-size: 12px; color: var(--ink-faint); }
 
   #layout { flex: 1; display: flex; min-height: 0; }
-  #map { flex: 1 1 auto; min-width: 0; background: #222; cursor: crosshair; }
+  #map { flex: 1 1 auto; min-width: 0; background: #f8f9fa; cursor: crosshair; }
 
   #sidebar {
     width: 360px; flex: none; background: var(--surface); border-left: 1px solid var(--line);
@@ -136,7 +136,7 @@
   <header>
     <div class="title">
       <h1>Building Footprint & Zoning Tool</h1>
-      <span class="sub">Trace a rooftop on satellite imagery &rarr; get square footage & check municipal limits</span>
+      <span class="sub">Clean Vector Map Mode &rarr; Trace, view municipal limits, & scan buildings</span>
     </div>
   </header>
 
@@ -150,9 +150,9 @@
         <input type="text" id="address-input" placeholder="e.g. 1855 Denver W Ct, Lakewood, CO">
         <div class="row">
           <button class="btn primary" id="search-btn">Go to address</button>
-          <button class="btn" id="labels-btn">Labels: on</button>
+          <button class="btn" id="map-style-btn">Style: Light Map</button>
         </div>
-        <div class="hint">Click points around the roofline to trace it. Double-click, or use <strong>Finish shape</strong>, to close it. Drag any point to adjust before saving.</div>
+        <div class="hint">Click points to trace rooftops or shapes. Double-click to finish.</div>
       </div>
 
       <div class="panel">
@@ -182,8 +182,8 @@
       </div>
 
       <div class="panel">
-        <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(Jeffco Assessor data)</span></h2>
-        <div class="caveat">Queries Jefferson County's parcel feed for recorded building sizes and flags anything at or above your threshold. Check each flagged building against your sandbox map before logging.</div>
+        <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(JEFFCO ASSESSOR DATA)</span></h2>
+        <div class="caveat">Queries Jefferson County's parcel feed for recorded building sizes and flags anything at or above your threshold.</div>
         <button class="btn primary" id="scan-btn" style="width:100%;">Scan current view for buildings</button>
         <div id="scan-status" style="margin-top:8px;"></div>
       </div>
@@ -234,7 +234,7 @@
   var LOG_KEY = 'lakewood-footprint-tool-log-v4';
   var EARTH_R = 6378137.0;
 
-  var map, imageryLayer, labelsLayer, labelsOn = true;
+  var map, lightLayer, satelliteLayer, currentBasemap = 'light';
   var currentPath = [], currentMarkers = [], currentShape = null;
   var pendingFinished = false, savedEntries = [];
   var lastSearchedLabel = '';
@@ -255,15 +255,15 @@
   function initMap() {
     map = L.map('map', { doubleClickZoom: false, maxZoom: 21 }).setView([39.715, -105.109], 13);
 
-    imageryLayer = L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imagery &copy; Esri, Maxar' }
+    lightLayer = L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+      { maxZoom: 21, maxNativeZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>' }
     ).addTo(map);
 
-    labelsLayer = L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 21, maxNativeZoom: 19, opacity: 0.9 }
-    ).addTo(map);
+    satelliteLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imagery &copy; Esri, Maxar' }
+    );
 
     map.on('click', onMapClick);
     map.on('dblclick', function () { finishShape(); });
@@ -275,10 +275,26 @@
     document.getElementById('muni-btn').addEventListener('click', toggleMunicipalBoundary);
     document.getElementById('boundary-btn').addEventListener('click', toggleSectionBoundaries);
     document.getElementById('scan-btn').addEventListener('click', scanVisibleArea);
+    document.getElementById('map-style-btn').addEventListener('click', toggleMapStyle);
 
     loadLog();
     renderLog();
     loadMunicipalBoundary('Lakewood, Colorado');
+  }
+
+  function toggleMapStyle() {
+    var btn = document.getElementById('map-style-btn');
+    if (currentBasemap === 'light') {
+      map.removeLayer(lightLayer);
+      satelliteLayer.addTo(map);
+      currentBasemap = 'satellite';
+      btn.textContent = 'Style: Satellite';
+    } else {
+      map.removeLayer(satelliteLayer);
+      lightLayer.addTo(map);
+      currentBasemap = 'light';
+      btn.textContent = 'Style: Light Map';
+    }
   }
 
   function onMapClick(e) {
@@ -307,7 +323,7 @@
   function redrawShape() {
     if (currentShape) { map.removeLayer(currentShape); currentShape = null; }
     if (currentPath.length === 0) return;
-    var style = { color: '#3D6B62', weight: 2, fillColor: '#3D6B62', fillOpacity: 0.18 };
+    var style = { color: '#3D6B62', weight: 2, fillColor: '#3D6B62', fillOpacity: 0.25 };
     if (currentPath.length < 3) {
       currentShape = L.polyline(currentPath, style).addTo(map);
     } else {
@@ -394,7 +410,7 @@
     var frozen = L.polygon(path.map(function (p) { return [p.lat, p.lng]; }), {
       color: flagged ? '#4C7A4E' : '#8B8E7B',
       fillColor: flagged ? '#4C7A4E' : '#8B8E7B',
-      weight: 2, fillOpacity: 0.18
+      weight: 2, fillOpacity: 0.35
     }).addTo(map);
     savedEntries.push({ label: label, note: note, sqft: sqft, sqm: sqm, flagged: flagged, path: path, layer: frozen });
     persistLog();
@@ -425,7 +441,7 @@
         layer = L.polygon(e.path, {
           color: e.flagged ? '#4C7A4E' : '#8B8E7B',
           fillColor: e.flagged ? '#4C7A4E' : '#8B8E7B',
-          weight: 2, fillOpacity: 0.18
+          weight: 2, fillOpacity: 0.35
         }).addTo(map);
       }
       e.layer = layer;
@@ -529,13 +545,6 @@
     if (e.key === 'Enter') doSearch();
   });
 
-  document.getElementById('labels-btn').addEventListener('click', function () {
-    labelsOn = !labelsOn;
-    if (labelsOn) labelsLayer.addTo(map); else map.removeLayer(labelsLayer);
-    this.textContent = labelsOn ? 'Labels: on' : 'Labels: off';
-  });
-
-  // ---------- Municipal Boundary Loader ----------
   function loadMunicipalBoundary(query) {
     var statusEl = document.getElementById('muni-status');
     var targetQuery = query || document.getElementById('muni-input').value.trim();
@@ -555,7 +564,7 @@
 
         if (match && match.geojson) {
           L.geoJSON(match.geojson, {
-            style: { color: '#d93025', weight: 2, dashArray: '6, 6', fillColor: '#d93025', fillOpacity: 0.03 }
+            style: { color: '#d93025', weight: 2, dashArray: '6, 6', fillColor: '#d93025', fillOpacity: 0.05 }
           }).addTo(muniGroup);
           muniShown = true;
           statusEl.textContent = 'Loaded municipal boundary line.';
@@ -578,7 +587,6 @@
     }
   }
 
-  // ---------- Static & Reliable Section Boundaries ----------
   function toggleSectionBoundaries() {
     var btn = document.getElementById('boundary-btn');
     var statusEl = document.getElementById('boundary-status');
@@ -594,13 +602,11 @@
 
     boundaryGroup.clearLayers();
 
-    // 1. Draw Kipling Street (North-South Division)
     var kiplingLine = L.polyline([
       [39.8000, -105.1097],
       [39.6000, -105.1097]
     ], { color: '#1a1a1a', weight: 4, dashArray: '6, 6', opacity: 0.85 }).bindTooltip("Kipling St Divider", { sticky: true });
 
-    // 2. Draw 6th Avenue (East-West Division)
     var sixthLine = L.polyline([
       [39.7257, -105.2000],
       [39.7257, -105.0000]
@@ -609,7 +615,6 @@
     boundaryGroup.addLayer(kiplingLine);
     boundaryGroup.addLayer(sixthLine);
 
-    // 3. Quadrant Labels Relative to Kipling & 6th Ave
     var QUADRANTS = [
       { lat: 39.7450, lng: -105.1350, color: '#2E9E4E', text: 'Green · Kylie (NW)' },
       { lat: 39.7450, lng: -105.0800, color: '#3355CC', text: 'Blue · Myles (NE)' },
@@ -635,7 +640,6 @@
     statusEl.textContent = 'Section dividers (Kipling / 6th Ave) and team quadrants displayed.';
   }
 
-  // ---------- Robust Building Auto-Detection ----------
   function scanVisibleArea() {
     var statusEl = document.getElementById('scan-status');
     var b = map.getBounds();
@@ -644,16 +648,28 @@
     statusEl.textContent = 'Querying Jefferson County building footprints...';
     scanGroup.clearLayers();
 
-    // Query Jeffco Public REST Service
-    var esriQueryUrl = 'https://gisportal.jeffco.us/server2/rest/services/Parcel/FeatureServer/20/query?' +
-      'where=STTGRSAREA%20%3E%3D%20' + threshold +
-      '&geometry=' + [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(',') +
-      '&geometryType=esriGeometryEnvelope' +
-      '&inSR=4326&spatialRel=esriSpatialRelIntersects' +
-      '&outFields=PIN,PARCELID,PRPADDRESS,STTYRBLT,STTTYPUSE,STTGRSAREA,OWNNAM' +
-      '&returnGeometry=true&outSR=4326&f=json';
+    var baseUrl = 'https://services2.arcgis.com/839z1P1Sg5R636Y3/arcgis/rest/services/Jefferson_County_Parcels/FeatureServer/20/query';
+    
+    var params = new URLSearchParams({
+      where: 'STTGRSAREA >= ' + threshold,
+      geometry: [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(','),
+      geometryType: 'esriGeometryEnvelope',
+      inSR: '4326',
+      spatialRel: 'esriSpatialRelIntersects',
+      outFields: 'PIN,PARCELID,PRPADDRESS,STTYRBLT,STTTYPUSE,STTGRSAREA,OWNNAM',
+      returnGeometry: 'true',
+      outSR: '4326',
+      f: 'json'
+    });
 
-    fetch(esriQueryUrl)
+    function fetchWithFallback(primaryUrl) {
+      return fetch(primaryUrl).catch(function () {
+        var corsProxyUrl = 'https://corsproxy.io/?' + encodeURIComponent(primaryUrl);
+        return fetch(corsProxyUrl);
+      });
+    }
+
+    fetchWithFallback(baseUrl + '?' + params.toString())
       .then(function (r) {
         if (!r.ok) throw new Error('Server returned HTTP status ' + r.status);
         return r.json();
@@ -669,16 +685,22 @@
 
         var count = 0;
         features.forEach(function (f) {
-          if (!f.geometry || !f.geometry.rings) return;
+          if (!f.geometry || (!f.geometry.rings && !f.geometry.coordinates)) return;
           count++;
-          var ring = f.geometry.rings[0];
-          var latlngs = ring.map(function(pt) { return [pt[1], pt[0]]; });
+
+          var latlngs = [];
+          if (f.geometry.rings) {
+            latlngs = f.geometry.rings[0].map(function(pt) { return [pt[1], pt[0]]; });
+          } else if (f.geometry.coordinates) {
+            latlngs = f.geometry.coordinates[0].map(function(pt) { return [pt[1], pt[0]]; });
+          }
+
           var attrs = f.attributes || {};
           var sqft = attrs.STTGRSAREA || 0;
           var addr = (attrs.PRPADDRESS || 'Unknown Address').trim();
 
           var poly = L.polygon(latlngs, {
-            color: '#A23A2C', fillColor: '#A23A2C', weight: 3, fillOpacity: 0.35
+            color: '#A23A2C', fillColor: '#A23A2C', weight: 2, fillOpacity: 0.4
           }).addTo(scanGroup);
 
           var popupDiv = document.createElement('div');
