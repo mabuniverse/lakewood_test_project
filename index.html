@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Building Footprint Tool</title>
+<title>Building Footprint & Zoning Tool</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
 <style>
   :root {
@@ -152,7 +152,7 @@
           <button class="btn primary" id="search-btn">Go to address</button>
           <button class="btn" id="map-style-btn">Style: Light Map</button>
         </div>
-        <div class="hint">Click points to trace rooftops or shapes. Double-click to finish.</div>
+        <div class="hint">Click points to trace rooftops manually, or click scanned shapes for auto-footprints.</div>
       </div>
 
       <div class="panel">
@@ -183,7 +183,7 @@
 
       <div class="panel">
         <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(JEFFCO ASSESSOR DATA)</span></h2>
-        <div class="caveat">Queries Jefferson County's parcel feed for recorded building sizes and flags anything at or above your threshold.</div>
+        <div class="caveat">Queries Jefferson County's parcel feed for recorded building sizes, floor counts, and auto-detects footprint polygons.</div>
         <button class="btn primary" id="scan-btn" style="width:100%;">Scan current view for buildings</button>
         <div id="scan-status" style="margin-top:8px;"></div>
       </div>
@@ -214,7 +214,7 @@
 
       <div class="panel" style="flex:1; border-bottom:none;">
         <h2>Measured buildings</h2>
-        <div id="log-empty">Nothing saved yet &mdash; trace a rooftop to get started.</div>
+        <div id="log-empty">Nothing saved yet &mdash; scan or trace a rooftop to get started.</div>
         <table id="log-table" style="display:none;">
           <thead><tr><th>Label</th><th style="text-align:right;">Sq ft</th><th></th></tr></thead>
           <tbody id="log-body"></tbody>
@@ -231,7 +231,7 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
 <script>
 (function () {
-  var LOG_KEY = 'lakewood-footprint-tool-log-v4';
+  var LOG_KEY = 'lakewood-footprint-tool-log-v5';
   var EARTH_R = 6378137.0;
 
   var map, lightLayer, satelliteLayer, currentBasemap = 'light';
@@ -656,7 +656,7 @@
       geometryType: 'esriGeometryEnvelope',
       inSR: '4326',
       spatialRel: 'esriSpatialRelIntersects',
-      outFields: 'PIN,PARCELID,PRPADDRESS,STTYRBLT,STTTYPUSE,STTGRSAREA,OWNNAM',
+      outFields: 'PIN,PARCELID,PRPADDRESS,STTYRBLT,STTTYPUSE,STTGRSAREA,OWNNAM,STTSTORIES',
       returnGeometry: 'true',
       outSR: '4326',
       f: 'json'
@@ -685,8 +685,7 @@
 
         var count = 0;
         features.forEach(function (f) {
-          if (!f.geometry || (!f.geometry.rings && !f.geometry.coordinates)) return;
-          count++;
+          if (!f.geometry) return;
 
           var latlngs = [];
           if (f.geometry.rings) {
@@ -695,9 +694,13 @@
             latlngs = f.geometry.coordinates[0].map(function(pt) { return [pt[1], pt[0]]; });
           }
 
+          if (latlngs.length === 0) return;
+          count++;
+
           var attrs = f.attributes || {};
           var sqft = attrs.STTGRSAREA || 0;
           var addr = (attrs.PRPADDRESS || 'Unknown Address').trim();
+          var stories = attrs.STTSTORIES || 'N/A';
 
           var poly = L.polygon(latlngs, {
             color: '#A23A2C', fillColor: '#A23A2C', weight: 2, fillOpacity: 0.4
@@ -708,16 +711,18 @@
           popupDiv.innerHTML =
             '<strong>' + Math.round(sqft).toLocaleString() + ' sq ft</strong><br>' +
             addr + '<br>' +
-            '<span style="font-size:11px; color:var(--ink-faint);">Built ' + (attrs.STTYRBLT || 'N/A') + ' · ' + (attrs.STTTYPUSE || '') + '</span><br>';
+            '<span style="font-size:11px; color:var(--ink-faint);">' +
+            'Stories/Floors: ' + stories + ' · Built ' + (attrs.STTYRBLT || 'N/A') + ' · ' + (attrs.STTTYPUSE || '') +
+            '</span><br>';
 
           var btn = document.createElement('button');
           btn.className = 'btn primary';
-          btn.textContent = 'Add to my list';
+          btn.textContent = 'Add auto-footprint to my list';
           btn.addEventListener('click', function () {
             commitEntry(
               latlngs.map(function(ll) { return { lat: ll[0], lng: ll[1] }; }),
               addr,
-              'Assessor data (PIN: ' + (attrs.PIN || 'N/A') + ')'
+              'Floors: ' + stories + ' | Assessor data (PIN: ' + (attrs.PIN || 'N/A') + ')'
             );
             poly.closePopup();
           });
