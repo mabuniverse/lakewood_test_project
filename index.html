@@ -182,10 +182,10 @@
       </div>
 
       <div class="panel">
-        <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(JEFFCO ASSESSOR DATA)</span></h2>
-        <div class="caveat">Queries Jefferson County's parcel feed for recorded building sizes, floor counts, and auto-detects footprint polygons.</div>
-        <button class="btn primary" id="scan-btn" style="width:100%;">Scan current view for buildings</button>
-        <div id="scan-status" style="margin-top:8px;"></div>
+        <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(LOCAL GEOJSON)</span></h2>
+        <div class="caveat">Loads vector building footprints directly from local dataset (`buildings.geojson`).</div>
+        <button class="btn primary" id="load-geojson-btn" style="width:100%;">Load Local Footprints</button>
+        <div id="scan-status" style="margin-top:8px;">Click above to load footprints.</div>
       </div>
 
       <div class="panel" id="drawing-panel">
@@ -240,6 +240,7 @@
   var lastSearchedLabel = '';
   var boundaryGroup = null, boundariesShown = false;
   var scanGroup = null, muniGroup = null, muniShown = false;
+  var geojsonLayer = null, rawGeojsonData = null;
 
   function geodesicAreaSqm(latlngs) {
     var n = latlngs.length;
@@ -274,12 +275,15 @@
 
     document.getElementById('muni-btn').addEventListener('click', toggleMunicipalBoundary);
     document.getElementById('boundary-btn').addEventListener('click', toggleSectionBoundaries);
-    document.getElementById('scan-btn').addEventListener('click', scanVisibleArea);
+    document.getElementById('load-geojson-btn').addEventListener('click', loadLocalGeoJSON);
     document.getElementById('map-style-btn').addEventListener('click', toggleMapStyle);
 
     loadLog();
     renderLog();
     loadMunicipalBoundary('Lakewood, Colorado');
+    
+    // Auto-load GeoJSON on startup
+    loadLocalGeoJSON();
   }
 
   function toggleMapStyle() {
@@ -388,6 +392,7 @@
 
   document.getElementById('threshold-input').addEventListener('input', function () {
     if (pendingFinished && currentPath.length >= 3) updateLiveArea();
+    if (geojsonLayer && rawGeojsonData) renderGeoJsonLayers();
   });
 
   function clearCurrentTrace() {
@@ -640,102 +645,85 @@
     statusEl.textContent = 'Section dividers (Kipling / 6th Ave) and team quadrants displayed.';
   }
 
-  function scanVisibleArea() {
-    var statusEl = document.getElementById('scan-status');
-    var b = map.getBounds();
-    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
-
-    statusEl.textContent = 'Querying Jefferson County building footprints...';
+  function renderGeoJsonLayers() {
+    if (!rawGeojsonData) return;
     scanGroup.clearLayers();
+    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
+    var count = 0;
 
-    var baseUrl = 'https://services2.arcgis.com/839z1P1Sg5R636Y3/arcgis/rest/services/Jefferson_County_Parcels/FeatureServer/20/query';
-    
-    var geomParam = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()].join(',');
-    var queryUrl = baseUrl +
-      '?where=' + encodeURIComponent('STTGRSAREA >= ' + threshold) +
-      '&geometry=' + encodeURIComponent(geomParam) +
-      '&geometryType=esriGeometryEnvelope' +
-      '&inSR=4326' +
-      '&spatialRel=esriSpatialRelIntersects' +
-      '&outFields=' + encodeURIComponent('PIN,PARCELID,PRPADDRESS,STTYRBLT,STTTYPUSE,STTGRSAREA,OWNNAM,STTSTORIES') +
-      '&returnGeometry=true' +
-      '&outSR=4326' +
-      '&f=json';
+    geojsonLayer = L.geoJSON(rawGeojsonData, {
+      style: function(feature) {
+        var sqft = feature.properties ? (feature.properties.STTGRSAREA || 0) : 0;
+        var flagged = sqft >= threshold;
+        return {
+          color: flagged ? '#A23A2C' : '#8B8E7B',
+          fillColor: flagged ? '#A23A2C' : '#8B8E7B',
+          weight: flagged ? 2 : 1,
+          fillOpacity: flagged ? 0.4 : 0.15
+        };
+      },
+      onEachFeature: function(feature, layer) {
+        var props = feature.properties || {};
+        var sqft = props.STTGRSAREA || 0;
+        var addr = (props.PRPADDRESS || 'Unknown Address').trim();
+        var pin = props.PIN || 'N/A';
+        count++;
 
-    fetch(queryUrl)
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
-      .then(function (data) {
-        if (data.error) throw new Error(data.error.message || 'ArcGIS Query Error');
-        var features = data.features || [];
-
-        if (features.length === 0) {
-          statusEl.textContent = 'Scan complete: No footprints found matching ≥ ' + threshold.toLocaleString() + ' sq ft in this exact view.';
-          return;
-        }
-
-        var count = 0;
-        features.forEach(function (f) {
-          if (!f.geometry) return;
-
-          var latlngs = [];
-          if (f.geometry.rings) {
-            latlngs = f.geometry.rings[0].map(function(pt) { return [pt[1], pt[0]]; });
-          } else if (f.geometry.coordinates) {
-            latlngs = f.geometry.coordinates[0].map(function(pt) { return [pt[1], pt[0]]; });
-          }
-
-          if (latlngs.length === 0) return;
-          count++;
-
-          var attrs = f.attributes || {};
-          var sqft = attrs.STTGRSAREA || 0;
-          var addr = (attrs.PRPADDRESS || 'Unknown Address').trim();
-          var stories = attrs.STTSTORIES || 'N/A';
-
-          var poly = L.polygon(latlngs, {
-            color: '#A23A2C', fillColor: '#A23A2C', weight: 2, fillOpacity: 0.4
-          }).addTo(scanGroup);
-
-          var autoSaveFn = function () {
-            commitEntry(
-              latlngs.map(function(ll) { return { lat: ll[0], lng: ll[1] }; }),
-              addr,
-              'Floors: ' + stories + ' | Assessor data (PIN: ' + (attrs.PIN || 'N/A') + ')'
-            );
-            poly.closePopup();
-          };
-
-          // Direct click to auto-select and auto-save shape geometry
-          poly.on('click', function(e) {
-            L.DomEvent.stopPropagation(e);
-            autoSaveFn();
-          });
-
-          var popupDiv = document.createElement('div');
-          popupDiv.className = 'popup-flagged';
-          popupDiv.innerHTML =
-            '<strong>' + Math.round(sqft).toLocaleString() + ' sq ft</strong><br>' +
-            addr + '<br>' +
-            '<span style="font-size:11px; color:var(--ink-faint);">' +
-            'Stories/Floors: ' + stories + ' · Built ' + (attrs.STTYRBLT || 'N/A') + ' · ' + (attrs.STTTYPUSE || '') +
-            '</span><br>';
-
-          var btn = document.createElement('button');
-          btn.className = 'btn primary';
-          btn.textContent = 'Add auto-footprint to my list';
-          btn.addEventListener('click', autoSaveFn);
-
-          popupDiv.appendChild(btn);
-          poly.bindPopup(popupDiv);
+        layer.on('click', function(e) {
+          L.DomEvent.stopPropagation(e);
+          var latlngs = layer.getLatLngs()[0];
+          commitEntry(
+            latlngs.map(function(ll) { return { lat: ll.lat, lng: ll.lng }; }),
+            addr,
+            'Local GeoJSON footprint (PIN: ' + pin + ')'
+          );
         });
 
-        statusEl.textContent = 'Scan complete. Found ' + count + ' structure(s) ≥ ' + threshold.toLocaleString() + ' sq ft.';
+        var popupDiv = document.createElement('div');
+        popupDiv.className = 'popup-flagged';
+        popupDiv.innerHTML =
+          '<strong>' + (sqft ? Math.round(sqft).toLocaleString() + ' sq ft' : 'Footprint') + '</strong><br>' +
+          addr + '<br>' +
+          '<span style="font-size:11px; color:var(--ink-faint);">' +
+          'PIN: ' + pin +
+          '</span><br>';
+
+        var btn = document.createElement('button');
+        btn.className = 'btn primary';
+        btn.textContent = 'Add auto-footprint to my list';
+        btn.addEventListener('click', function() {
+          var latlngs = layer.getLatLngs()[0];
+          commitEntry(
+            latlngs.map(function(ll) { return { lat: ll.lat, lng: ll.lng }; }),
+            addr,
+            'Local GeoJSON footprint (PIN: ' + pin + ')'
+          );
+          layer.closePopup();
+        });
+
+        popupDiv.appendChild(btn);
+        layer.bindPopup(popupDiv);
+      }
+    }).addTo(scanGroup);
+
+    document.getElementById('scan-status').textContent = 'Loaded ' + count.toLocaleString() + ' local building footprints!';
+  }
+
+  function loadLocalGeoJSON() {
+    var statusEl = document.getElementById('scan-status');
+    statusEl.textContent = 'Loading local buildings.geojson file...';
+
+    fetch('buildings.geojson')
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' - make sure buildings.geojson exists in project root');
+        return r.json();
       })
-      .catch(function (err) {
-        statusEl.textContent = 'Scan error: ' + err.message + '. (Try zooming in slightly closer or panning to refresh).';
+      .then(function(data) {
+        rawGeojsonData = data;
+        renderGeoJsonLayers();
+      })
+      .catch(function(err) {
+        statusEl.textContent = 'Error loading local dataset: ' + err.message;
       });
   }
 
