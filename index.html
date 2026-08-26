@@ -206,8 +206,16 @@
   ];
 
   var map, lightLayer, satelliteLayer, currentBasemap = 'light';
-  var scanGroup = null, savedEntries = [];
+  var scanGroup = null, overlayGroup = null, savedEntries = [];
   var rawGeojsonData = null;
+
+  // Custom marker positions corresponding to point locations
+  var pointsData = [
+    [39.7180, -105.1000], [39.7155, -105.1050], [39.7120, -105.1100],
+    [39.7190, -105.1150], [39.7100, -105.0950], [39.7080, -105.1080],
+    [39.7135, -105.1020], [39.7160, -105.0900], [39.7050, -105.1180],
+    [39.7020, -105.1040], [39.7210, -105.1080], [39.7140, -105.1200]
+  ];
 
   function initMap() {
     map = L.map('map', { doubleClickZoom: false, maxZoom: 21 }).setView([39.715, -105.109], 13);
@@ -223,6 +231,7 @@
     );
 
     scanGroup = L.layerGroup().addTo(map);
+    overlayGroup = L.layerGroup().addTo(map);
 
     document.getElementById('load-geojson-btn').addEventListener('click', loadLocalGeoJSON);
     document.getElementById('map-style-btn').addEventListener('click', toggleMapStyle);
@@ -230,9 +239,35 @@
     document.getElementById('save-fields-btn').addEventListener('click', saveActiveFields);
     document.getElementById('export-btn').addEventListener('click', exportCSV);
 
+    renderCustomLayers();
     loadLog();
     renderLog();
     loadLocalGeoJSON();
+  }
+
+  function renderCustomLayers() {
+    overlayGroup.clearLayers();
+
+    // 1. Add Yellow Highlight Rectangle
+    var yellowBounds = [[39.7010, -105.1270], [39.7040, -105.1255]];
+    L.rectangle(yellowBounds, {
+      color: '#D4AF37',
+      fillColor: '#FFE700',
+      fillOpacity: 0.85,
+      weight: 1
+    }).addTo(overlayGroup);
+
+    // 2. Add Red Dot Markers
+    pointsData.forEach(function(coord) {
+      L.circleMarker(coord, {
+        radius: 5,
+        fillColor: '#800000',
+        color: '#800000',
+        weight: 1,
+        opacity: 1,
+        fillOpacity: 0.9
+      }).addTo(overlayGroup);
+    });
   }
 
   function toggleMapStyle() {
