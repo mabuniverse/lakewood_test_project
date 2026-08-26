@@ -180,6 +180,13 @@
         <div id="scan-status" style="margin-top:8px;"></div>
       </div>
 
+      <div class="panel">
+        <h2>Local building footprints <span style="font-weight:400; color:var(--ink-faint);">(your buildings.geojson)</span></h2>
+        <div class="caveat">Loads the county-wide building outlines from the <code>buildings.geojson</code> file you exported, straight from this page &mdash; no per-view querying needed. Each outline starts with just address/PIN/size; click one to fetch its full assessor record (owner, floors, subdivision, etc.) the same way the live scan does. Only buildings at or above your threshold are shown. This only works when the page is served over http/https (e.g. GitHub Pages) with <code>buildings.geojson</code> sitting next to <code>index.html</code> in the same repo &mdash; it can't load from a double-clicked local file.</div>
+        <button class="btn primary" id="load-local-btn" style="width:100%;">Load buildings.geojson</button>
+        <div id="local-status" style="margin-top:8px;"></div>
+      </div>
+
       <div class="panel" id="drawing-panel">
         <h2>Tracing</h2>
         <div id="draw-status">Click on the map to start tracing a rooftop.</div>
@@ -232,6 +239,7 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson-client/3.1.0/topojson-client.min.js"></script>
 <script>
 (function () {
   var LOG_KEY = 'lakewood-footprint-tool-log-v2';
@@ -252,6 +260,57 @@
   var lastFootprintSqft = 0;
   var currentAssessorMatch = null; // Jeffco attributes matched to the current trace, if any
   var lookupToken = 0; // guards against a stale async lookup overwriting a newer trace
+  var localLayerGroup = null;
+  var localBuildingsLoaded = false;
+
+  // ---------- Jefferson County live parcel/assessor feed ----------
+  // Source: Jeffco "Parcel" feature service (Assessor's Office + Business & Innovation Technologies), CC-BY 4.0.
+  var JEFFCO_PARCEL_URL = 'https://gisportal.jeffco.us/server2/rest/services/Parcel/FeatureServer/20/query';
+  var JEFFCO_FULL_FIELDS = [
+    'PIN', 'PARCELID', 'PRPADDRESS', 'PRPSTRNUM', 'PRPSTRDIR', 'PRPSTRNAM', 'PRPSTRTYP', 'PRPSTRUNT',
+    'PRPCTYNAM', 'PRPSTENAM', 'PRPZIP5',
+    'OWNNAM', 'OWNNAM2', 'OWNICO', 'DBA',
+    'MAILSTRNBR', 'MAILSTRDIR', 'MAILSTRNAM', 'MAILSTRTYP', 'MAILSTRUNT', 'MAILCTYNAM', 'MAILSTENAM', 'MAILZIP5',
+    'SUBNAM',
+    'STTYRBLT', 'STTTYPUSE', 'STTGRSAREA', 'STTNBRFLR', 'STTNBRBLDG', 'STTNBRUNT'
+  ].join(',');
+
+  // ---------- Formatting helpers for assessor records ----------
+  function formatOwnerName(a) {
+    if (!a) return '';
+    var parts = [a.OWNNAM, a.OWNNAM2].filter(Boolean);
+    var name = parts.join(' / ');
+    if (a.OWNICO) name += (name ? ' c/o ' : 'c/o ') + a.OWNICO;
+    return name;
+  }
+  function formatOwnerMailingAddress(a) {
+    if (!a) return '';
+    var street = [a.MAILSTRNBR, a.MAILSTRDIR, a.MAILSTRNAM, a.MAILSTRTYP].filter(Boolean).join(' ');
+    if (a.MAILSTRUNT) street += ' ' + a.MAILSTRUNT;
+    var cityLine = [a.MAILCTYNAM, [a.MAILSTENAM, a.MAILZIP5].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+    return [street, cityLine].filter(Boolean).join(', ');
+  }
+  function formatSitusAddress(a) {
+    if (!a) return '';
+    var cityLine = [a.PRPCTYNAM, [a.PRPSTENAM, a.PRPZIP5].filter(Boolean).join(' ')].filter(Boolean).join(', ');
+    return [a.PRPADDRESS, cityLine].filter(Boolean).join(', ');
+  }
+
+  function jeffcoQuery(paramsObj) {
+    var params = new URLSearchParams(paramsObj);
+    return fetch(JEFFCO_PARCEL_URL + '?' + params.toString()).then(function (r) { return r.json(); });
+  }
+
+  // Exact-match lookup by parcel number — used to enrich records that only carry a PIN (e.g. the local file).
+  function fetchAssessorByPin(pin) {
+    if (!pin) return Promise.resolve(null);
+    return jeffcoQuery({
+      where: "PIN='" + String(pin).replace(/'/g, "''") + "'",
+      outFields: JEFFCO_FULL_FIELDS, returnGeometry: 'false', resultRecordCount: '1', f: 'json'
+    }).then(function (data) {
+      return (data && data.features && data.features.length) ? data.features[0].attributes : null;
+    });
+  }
 
   // ---------- Geodesic area (same formula used by Leaflet.draw / GeometryUtil) ----------
   function geodesicAreaSqm(latlngs) {
@@ -284,6 +343,7 @@
 
     boundaryGroup = L.layerGroup();
     scanGroup = L.layerGroup().addTo(map);
+    localLayerGroup = L.layerGroup().addTo(map);
 
     loadLog();
     renderLog();
@@ -368,9 +428,7 @@
     return gfa;
   }
 
-  // ---------- Auto-pull floor count from Jeffco's live parcel/assessor feed ----------
-  var JEFFCO_LOOKUP_FIELDS = 'PIN,PARCELID,PRPADDRESS,OWNNAM,STTYRBLT,STTTYPUSE,STTGRSAREA,STTNBRFLR';
-
+  // ---------- Auto-pull the full assessor record for the traced location ----------
   function centroidOf(latlngs) {
     var sumLat = 0, sumLng = 0;
     latlngs.forEach(function (p) { sumLat += p.lat; sumLng += p.lng; });
@@ -378,23 +436,13 @@
   }
 
   function jeffcoLookupAtPoint(lat, lng) {
-    var params = new URLSearchParams({
-      where: '1=1',
-      geometry: lng + ',' + lat,
-      geometryType: 'esriGeometryPoint',
-      inSR: '4326',
-      spatialRel: 'esriSpatialRelIntersects',
-      outFields: JEFFCO_LOOKUP_FIELDS,
-      returnGeometry: 'false',
-      resultRecordCount: '1',
-      f: 'json'
+    return jeffcoQuery({
+      where: '1=1', geometry: lng + ',' + lat, geometryType: 'esriGeometryPoint', inSR: '4326',
+      spatialRel: 'esriSpatialRelIntersects', outFields: JEFFCO_FULL_FIELDS,
+      returnGeometry: 'false', resultRecordCount: '1', f: 'json'
+    }).then(function (data) {
+      return (data && data.features && data.features.length) ? data.features[0].attributes : null;
     });
-    return fetch(JEFFCO_PARCEL_URL + '?' + params.toString())
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        if (data && data.features && data.features.length) return data.features[0].attributes;
-        return null;
-      });
   }
 
   function runFloorLookup() {
@@ -410,17 +458,21 @@
       .then(function (attrs) {
         if (myToken !== lookupToken) return; // a newer trace superseded this lookup
         currentAssessorMatch = attrs;
-        if (attrs && attrs.STTNBRFLR) {
-          document.getElementById('floors-input').value = attrs.STTNBRFLR;
-          statusEl.textContent = 'Auto-filled from PIN ' + (attrs.PIN || attrs.PARCELID || '—') +
-            (attrs.PRPADDRESS ? ' — ' + attrs.PRPADDRESS : '') + '. Override if this trace covers a different building.';
-          if (attrs.STTGRSAREA) {
-            checkEl.style.display = '';
-            checkEl.textContent = 'Assessor recorded gross area for this parcel: ' + Math.round(attrs.STTGRSAREA).toLocaleString() +
-              ' sq ft (' + (attrs.STTTYPUSE || 'unknown use') + ', built ' + (attrs.STTYRBLT || '—') + ') — compare against the estimate above.';
-          }
-        } else if (attrs) {
-          statusEl.textContent = 'Matched PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ', but no floor count on file — enter it manually if known.';
+        if (attrs) {
+          if (attrs.STTNBRFLR) document.getElementById('floors-input').value = attrs.STTNBRFLR;
+          statusEl.textContent = 'Matched PIN ' + (attrs.PIN || attrs.PARCELID || '—') +
+            (attrs.STTNBRFLR ? ' — floors auto-filled.' : ' — no floor count on file, enter it manually if known.') +
+            ' Override if this trace covers a different building.';
+          var lines = [];
+          lines.push('<strong>Parcel ' + (attrs.PIN || attrs.PARCELID || '—') + '</strong>');
+          if (formatSitusAddress(attrs)) lines.push(formatSitusAddress(attrs));
+          if (formatOwnerName(attrs)) lines.push('Owner: ' + formatOwnerName(attrs));
+          if (formatOwnerMailingAddress(attrs)) lines.push('Owner mailing address: ' + formatOwnerMailingAddress(attrs));
+          if (attrs.SUBNAM) lines.push('Subdivision: ' + attrs.SUBNAM);
+          lines.push([attrs.STTTYPUSE, attrs.STTYRBLT ? 'built ' + attrs.STTYRBLT : null].filter(Boolean).join(' · '));
+          if (attrs.STTGRSAREA) lines.push('Assessor recorded gross area: ' + Math.round(attrs.STTGRSAREA).toLocaleString() + ' sq ft — compare against your estimate above.');
+          checkEl.innerHTML = lines.filter(Boolean).join('<br>');
+          checkEl.style.display = '';
         } else {
           statusEl.textContent = 'No Jeffco parcel matched this location — enter floors manually if known.';
         }
@@ -479,7 +531,8 @@
   // latlngs: array of {lat,lng} (or L.LatLng, which also exposes .lat/.lng).
   // sqftOverride: use this as the logged sq ft instead of recomputing from the polygon shape
   // (e.g. footprint x floors for a manual trace, or the assessor's own recorded GFA for a scan result).
-  function commitEntry(latlngs, label, note, sqftOverride) {
+  // extra: optional object of assessor fields to carry into the CSV export.
+  function commitEntry(latlngs, label, note, sqftOverride, extra) {
     var sqft, sqm;
     if (typeof sqftOverride === 'number' && sqftOverride > 0) {
       sqft = sqftOverride;
@@ -496,10 +549,29 @@
       fillColor: flagged ? '#4C7A4E' : '#8B8E7B',
       weight: 2, fillOpacity: 0.18
     }).addTo(map);
-    savedEntries.push({ label: label, note: note, sqft: sqft, sqm: sqm, flagged: flagged, path: path, layer: frozen });
+    var entry = { label: label, note: note, sqft: sqft, sqm: sqm, flagged: flagged, path: path, layer: frozen };
+    Object.assign(entry, extra || {});
+    savedEntries.push(entry);
     persistLog();
     renderLog();
     return { sqft: sqft, flagged: flagged };
+  }
+
+  // Builds the CSV/record "extra" fields from a Jeffco attributes object (may be null/partial).
+  function extraFromAssessor(attrs, footprintSqft) {
+    if (!attrs) return { footprintSqft: footprintSqft || '' };
+    return {
+      pin: attrs.PIN || attrs.PARCELID || '',
+      situsAddress: formatSitusAddress(attrs),
+      ownerName: formatOwnerName(attrs),
+      ownerAddress: formatOwnerMailingAddress(attrs),
+      subdivision: attrs.SUBNAM || '',
+      yearBuilt: attrs.STTYRBLT || '',
+      useType: attrs.STTTYPUSE || '',
+      floors: attrs.STTNBRFLR || '',
+      footprintSqft: footprintSqft || '',
+      assessorGrossArea: attrs.STTGRSAREA || ''
+    };
   }
 
   document.getElementById('save-trace-btn').addEventListener('click', function () {
@@ -523,7 +595,8 @@
       currentPath,
       document.getElementById('label-input').value.trim(),
       combinedNote,
-      gfaSqft
+      gfaSqft,
+      extraFromAssessor(currentAssessorMatch, Math.round(footprintSqft))
     );
     currentMarkers.forEach(function (m) { map.removeLayer(m); });
     currentPath = []; currentMarkers = []; currentShape = null; pendingFinished = false;
@@ -603,9 +676,18 @@
 
   document.getElementById('export-btn').addEventListener('click', function () {
     if (!savedEntries.length) { alert('Nothing saved yet.'); return; }
-    var rows = [['Label', 'Sq Ft', 'Sq M', 'Flagged (>= threshold)', 'Note']];
+    var rows = [[
+      'Label', 'PIN', 'Situs Address', 'Owner Name', 'Owner Mailing Address', 'Subdivision',
+      'Year Built', 'Use Type', 'Floors', 'Footprint (sq ft)', 'Assessor Gross Area (sq ft)',
+      'Logged Sq Ft', 'Flagged (>= threshold)', 'Note'
+    ]];
     savedEntries.forEach(function (e) {
-      rows.push([e.label || '', Math.round(e.sqft), Math.round(e.sqm), e.flagged ? 'Yes' : 'No', e.note || '']);
+      rows.push([
+        e.label || '', e.pin || '', e.situsAddress || '', e.ownerName || '', e.ownerAddress || '',
+        e.subdivision || '', e.yearBuilt || '', e.useType || '', e.floors || '',
+        e.footprintSqft || '', e.assessorGrossArea || '',
+        Math.round(e.sqft), e.flagged ? 'Yes' : 'No', e.note || ''
+      ]);
     });
     var csv = rows.map(function (r) {
       return r.map(function (v) {
@@ -758,13 +840,75 @@
   });
 
   // ---------- Auto-detect buildings via Jefferson County's live parcel/assessor feed ----------
-  // Source: Jeffco "Parcel" feature service (Assessor + BIT division), CC-BY 4.0.
-  var JEFFCO_PARCEL_URL = 'https://gisportal.jeffco.us/server2/rest/services/Parcel/FeatureServer/20/query';
-  var JEFFCO_FIELDS = 'PIN,PARCELID,PRPADDRESS,PRPSTRNUM,PRPSTRNAM,OWNNAM,STTYRBLT,STTTYPUSE,STTGRSAREA,STTNBRFLR';
-
   function ringToLatLngs(ring) {
     // ArcGIS rings are [x,y] = [lng,lat]; Leaflet wants [lat,lng].
     return ring.map(function (pt) { return { lat: pt[1], lng: pt[0] }; });
+  }
+
+  // Shared popup/quick-add rendering for a candidate building, used by both the
+  // live scan (scanVisibleArea) and the local buildings.geojson layer (loadLocalBuildings).
+  // When needsEnrichment is true, attrs is assumed to be the sparse local-file record
+  // (PRPADDRESS/PIN/STTGRSAREA/OBJECTID only) and the full record is fetched from the
+  // live Jeffco feed by PIN the first time the popup is opened.
+  function renderCandidateBuilding(latlngs, attrs, group, addressCounts, needsEnrichment) {
+    var poly = L.polygon(latlngs.map(function (p) { return [p.lat, p.lng]; }), {
+      color: '#A23A2C', fillColor: '#A23A2C', weight: 3, fillOpacity: 0.32, opacity: 0.95
+    }).addTo(group);
+    var popupDiv = document.createElement('div');
+    popupDiv.className = 'popup-flagged';
+    poly.bindPopup(popupDiv);
+
+    function refresh() {
+      var addr = (attrs.PRPADDRESS || '').trim();
+      var likelyCondo = addressCounts && addr && addressCounts[addr] > 1;
+      var sqft = attrs.STTGRSAREA || 0;
+      var floors = attrs.STTNBRFLR || null;
+      var perFloor = (floors && sqft) ? Math.round(sqft / floors) : null;
+      var lines = [];
+      lines.push('<strong>' + (sqft ? Math.round(sqft).toLocaleString() + ' sq ft' : 'size unknown') + '</strong>' + (sqft ? ' (assessor gross area)' : ''));
+      lines.push(formatSitusAddress(attrs) || addr || '(no address on file)');
+      lines.push('PIN ' + (attrs.PIN || attrs.PARCELID || '—') + (attrs.STTYRBLT ? ' · Built ' + attrs.STTYRBLT : ''));
+      var typeLine = [attrs.STTTYPUSE, floors ? floors + ' floor(s)' + (perFloor ? ' (≈' + perFloor.toLocaleString() + ' sq ft/floor)' : '') : null].filter(Boolean).join(' · ');
+      if (typeLine) lines.push(typeLine);
+      if (formatOwnerName(attrs)) lines.push('Owner: ' + formatOwnerName(attrs));
+      if (formatOwnerMailingAddress(attrs)) lines.push('Owner mailing address: ' + formatOwnerMailingAddress(attrs));
+      if (attrs.SUBNAM) lines.push('Subdivision: ' + attrs.SUBNAM);
+      if (likelyCondo) lines.push('<strong style="color:var(--accent-ink);">' + addressCounts[addr] + ' parcels at this address — likely a condo/HOA. Use the condo protocol instead of logging this parcel directly.</strong>');
+      lines.push('<span style="color:var(--ink-faint);">Still check the sandbox map before treating this as missing.</span>');
+      var html = lines.filter(Boolean).join('<br>');
+      if (needsEnrichment && !attrs._enriched) html += '<br><span style="color:var(--ink-faint);">Loading full assessor record…</span>';
+      popupDiv.innerHTML = html;
+      if (!likelyCondo) {
+        var btn = document.createElement('button');
+        btn.className = 'btn primary';
+        btn.textContent = 'Add to my list';
+        btn.addEventListener('click', function () {
+          commitEntry(
+            latlngs,
+            formatSitusAddress(attrs) || addr || ('PIN ' + (attrs.PIN || attrs.PARCELID || '')),
+            'PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ' · ' + (attrs.STTTYPUSE || 'Unknown use') +
+              ' · Built ' + (attrs.STTYRBLT || '—') + (floors ? ' · ' + floors + ' floor(s)' : '') +
+              ' · Owner: ' + (formatOwnerName(attrs) || '—') +
+              ' · Assessor recorded gross area (source: Jeffco parcel data)',
+            sqft,
+            extraFromAssessor(attrs, '')
+          );
+          poly.closePopup();
+        });
+        popupDiv.appendChild(btn);
+      }
+      try { if (poly.isPopupOpen && poly.isPopupOpen()) poly.getPopup().update(); } catch (e) {}
+    }
+    refresh();
+    if (needsEnrichment) {
+      poly.on('popupopen', function () {
+        if (attrs._enriched) return;
+        fetchAssessorByPin(attrs.PIN).then(function (full) {
+          if (full) { Object.assign(attrs, full); attrs._enriched = true; refresh(); }
+        }).catch(function () {});
+      });
+    }
+    return poly;
   }
 
   function scanVisibleArea() {
@@ -786,7 +930,7 @@
       geometryType: 'esriGeometryEnvelope',
       inSR: '4326',
       spatialRel: 'esriSpatialRelIntersects',
-      outFields: JEFFCO_FIELDS,
+      outFields: JEFFCO_FULL_FIELDS,
       returnGeometry: 'true',
       outSR: '4326',
       resultRecordCount: '500',
@@ -805,51 +949,9 @@
         });
 
         features.forEach(function (f) {
-          var attrs = f.attributes;
           if (!f.geometry || !f.geometry.rings || !f.geometry.rings.length) return;
           var latlngs = ringToLatLngs(f.geometry.rings[0]);
-          var sqft = attrs.STTGRSAREA || 0;
-          var addr = (attrs.PRPADDRESS || '').trim();
-          var likelyCondo = addr && addressCounts[addr] > 1;
-
-          var poly = L.polygon(latlngs.map(function (p) { return [p.lat, p.lng]; }), {
-            color: '#A23A2C', fillColor: '#A23A2C', weight: 3, fillOpacity: 0.32, opacity: 0.95
-          }).addTo(scanGroup);
-
-          var floors = attrs.STTNBRFLR || null;
-          var perFloor = (floors && sqft) ? Math.round(sqft / floors) : null;
-
-          var popupDiv = document.createElement('div');
-          popupDiv.className = 'popup-flagged';
-          popupDiv.innerHTML =
-            '<strong>' + Math.round(sqft).toLocaleString() + ' sq ft</strong> (assessor gross area)<br>' +
-            (addr || '(no address on file)') + '<br>' +
-            'PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ' · Built ' + (attrs.STTYRBLT || '—') + '<br>' +
-            (attrs.STTTYPUSE || '') +
-            (floors ? ' · ' + floors + ' floor(s)' + (perFloor ? ' (≈' + perFloor.toLocaleString() + ' sq ft/floor)' : '') : '') + '<br>' +
-            'Owner: ' + (attrs.OWNNAM || '—') +
-            (likelyCondo ? '<br><strong style="color:var(--accent-ink);">' + addressCounts[addr] + ' parcels at this address — likely a condo/HOA. Use the condo protocol instead of logging this parcel directly.</strong>' : '') +
-            '<br><span style="color:var(--ink-faint);">Still check the sandbox map before treating this as missing.</span>';
-
-          if (!likelyCondo) {
-            var btn = document.createElement('button');
-            btn.className = 'btn primary';
-            btn.textContent = 'Add to my list';
-            btn.addEventListener('click', function () {
-              commitEntry(
-                latlngs,
-                addr || ('PIN ' + (attrs.PIN || attrs.PARCELID || '')),
-                'PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ' · ' + (attrs.STTTYPUSE || 'Unknown use') +
-                ' · Built ' + (attrs.STTYRBLT || '—') + (floors ? ' · ' + floors + ' floor(s)' : '') +
-                ' · Owner: ' + (attrs.OWNNAM || '—') +
-                ' · Assessor recorded gross area (source: Jeffco parcel data)',
-                sqft
-              );
-              poly.closePopup();
-            });
-            popupDiv.appendChild(btn);
-          }
-          poly.bindPopup(popupDiv);
+          renderCandidateBuilding(latlngs, f.attributes, scanGroup, addressCounts, false);
         });
 
         var note = data && data.exceededTransferLimit ? ' (more exist — zoom in for full coverage)' : '';
@@ -863,6 +965,98 @@
   }
 
   document.getElementById('scan-btn').addEventListener('click', scanVisibleArea);
+
+  // ---------- Local buildings.geojson layer (your GitHub-hosted export) ----------
+  // Converts GeoJSON Polygon/MultiPolygon coordinates ([lng,lat] rings) into the
+  // {lat,lng} arrays renderCandidateBuilding expects. For a MultiPolygon this returns
+  // only the first polygon's outer ring — good enough for outlining a single building.
+  function geojsonCoordsToLatLngs(geometry) {
+    if (!geometry) return null;
+    var ring;
+    if (geometry.type === 'Polygon') {
+      ring = geometry.coordinates && geometry.coordinates[0];
+    } else if (geometry.type === 'MultiPolygon') {
+      ring = geometry.coordinates && geometry.coordinates[0] && geometry.coordinates[0][0];
+    }
+    if (!ring || !ring.length) return null;
+    return ring.map(function (pt) { return { lat: pt[1], lng: pt[0] }; });
+  }
+
+  var localFeatureCollection = null; // cached after first fetch, so re-clicking (e.g. after changing the threshold) doesn't re-download 12MB
+
+  function renderLocalBuildingsAtThreshold() {
+    var statusEl = document.getElementById('local-status');
+    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
+    var allFeatures = localFeatureCollection.features || [];
+
+    localLayerGroup.clearLayers();
+
+    var addressCounts = {};
+    allFeatures.forEach(function (f) {
+      var addr = ((f.properties && f.properties.PRPADDRESS) || '').trim();
+      addressCounts[addr] = (addressCounts[addr] || 0) + 1;
+    });
+
+    var shown = 0, skippedNoGeometry = 0;
+    allFeatures.forEach(function (f) {
+      var sqft = (f.properties && f.properties.STTGRSAREA) || 0;
+      if (sqft < threshold) return;
+      var latlngs = geojsonCoordsToLatLngs(f.geometry);
+      if (!latlngs) { skippedNoGeometry++; return; }
+      renderCandidateBuilding(latlngs, f.properties || {}, localLayerGroup, addressCounts, true);
+      shown++;
+    });
+
+    var note = skippedNoGeometry ? (' (' + skippedNoGeometry + ' skipped — no usable geometry)') : '';
+    statusEl.textContent = shown.toLocaleString() + ' of ' + allFeatures.length.toLocaleString() +
+      ' buildings in the file are at or above ' + threshold.toLocaleString() + ' sq ft and are now on the map' +
+      note + '. Click one for details — the full assessor record loads on first click. Change the threshold and click the button again to refresh.';
+  }
+
+  function loadLocalBuildings() {
+    var btn = document.getElementById('load-local-btn');
+    var statusEl = document.getElementById('local-status');
+
+    if (localBuildingsLoaded) {
+      renderLocalBuildingsAtThreshold();
+      return;
+    }
+
+    btn.disabled = true;
+    statusEl.textContent = 'Loading buildings.geojson…';
+
+    fetch('buildings.geojson')
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        var featureCollection;
+        if (data && data.type === 'Topology') {
+          if (typeof topojson === 'undefined') throw new Error('topojson-client did not load');
+          var objectKey = Object.keys(data.objects || {})[0];
+          if (!objectKey) throw new Error('no objects found in TopoJSON file');
+          featureCollection = topojson.feature(data, data.objects[objectKey]);
+        } else if (data && data.type === 'FeatureCollection') {
+          featureCollection = data;
+        } else {
+          throw new Error('unrecognized file format (expected TopoJSON or GeoJSON)');
+        }
+
+        localFeatureCollection = featureCollection;
+        localBuildingsLoaded = true;
+        btn.disabled = false;
+        btn.textContent = 'Refresh from buildings.geojson';
+        renderLocalBuildingsAtThreshold();
+      })
+      .catch(function (err) {
+        btn.disabled = false;
+        statusEl.textContent = 'Could not load buildings.geojson (' + (err && err.message ? err.message : 'unknown error') +
+          '). Make sure it sits next to index.html and this page is served over http/https, not opened as a local file.';
+      });
+  }
+
+  document.getElementById('load-local-btn').addEventListener('click', loadLocalBuildings);
 
   initMap();
   tryLoadCachedBoundaries();
