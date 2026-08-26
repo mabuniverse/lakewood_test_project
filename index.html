@@ -152,7 +152,7 @@
           <button class="btn primary" id="search-btn">Go to address</button>
           <button class="btn" id="map-style-btn">Style: Light Map</button>
         </div>
-        <div class="hint">Click points to trace rooftops manually, or click scanned shapes for auto-footprints.</div>
+        <div class="hint">Click any building on map to select, auto-draw polygon, and update address.</div>
       </div>
 
       <div class="panel">
@@ -189,8 +189,8 @@
       </div>
 
       <div class="panel" id="drawing-panel">
-        <h2>Tracing</h2>
-        <div id="draw-status">Click on the map to start tracing a rooftop.</div>
+        <h2>Manual Tracing</h2>
+        <div id="draw-status">Click on the map to start tracing a custom rooftop.</div>
         <div class="row">
           <button class="btn" id="undo-point-btn" disabled>Undo point</button>
           <button class="btn primary" id="finish-shape-btn" disabled>Finish shape</button>
@@ -214,7 +214,7 @@
 
       <div class="panel" style="flex:1; border-bottom:none;">
         <h2>Measured buildings</h2>
-        <div id="log-empty">Nothing saved yet &mdash; scan or trace a rooftop to get started.</div>
+        <div id="log-empty">Nothing saved yet &mdash; click any building to auto-save.</div>
         <table id="log-table" style="display:none;">
           <thead><tr><th>Label</th><th style="text-align:right;">Sq ft</th><th></th></tr></thead>
           <tbody id="log-body"></tbody>
@@ -258,12 +258,12 @@
 
     lightLayer = L.tileLayer(
       'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-      { maxZoom: 21, maxNativeZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>' }
+      { maxZoom: 21, maxNativeZoom: 19, attribution: '&copy; OpenStreetMap' }
     ).addTo(map);
 
     satelliteLayer = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imagery &copy; Esri, Maxar' }
+      { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imagery &copy; Esri' }
     );
 
     map.on('click', onMapClick);
@@ -282,7 +282,7 @@
     renderLog();
     loadMunicipalBoundary('Lakewood, Colorado');
     
-    // Auto-load GeoJSON on startup
+    // Auto-load GeoJSON
     loadLocalGeoJSON();
   }
 
@@ -344,7 +344,7 @@
     finishBtn.disabled = n < 3;
     if (n === 0) status.textContent = 'Click on the map to start tracing a rooftop.';
     else if (n < 3) status.textContent = n + ' point(s) placed — add at least ' + (3 - n) + ' more.';
-    else status.textContent = n + ' points placed. Keep going, or click Finish shape / double-click the map.';
+    else status.textContent = n + ' points placed. Keep going, or click Finish shape.';
   }
 
   function updateLiveArea() {
@@ -415,27 +415,14 @@
     var frozen = L.polygon(path.map(function (p) { return [p.lat, p.lng]; }), {
       color: flagged ? '#4C7A4E' : '#8B8E7B',
       fillColor: flagged ? '#4C7A4E' : '#8B8E7B',
-      weight: 2, fillOpacity: 0.35
+      weight: 2, fillOpacity: 0.45
     }).addTo(map);
+
     savedEntries.push({ label: label, note: note, sqft: sqft, sqm: sqm, flagged: flagged, path: path, layer: frozen });
     persistLog();
     renderLog();
     return { sqft: sqft, flagged: flagged };
   }
-
-  document.getElementById('save-trace-btn').addEventListener('click', function () {
-    if (!pendingFinished) return;
-    if (currentShape) map.removeLayer(currentShape);
-    commitEntry(
-      currentPath,
-      document.getElementById('label-input').value.trim(),
-      document.getElementById('note-input').value.trim()
-    );
-    currentMarkers.forEach(function (m) { map.removeLayer(m); });
-    currentPath = []; currentMarkers = []; currentShape = null; pendingFinished = false;
-    document.getElementById('trace-panel').classList.remove('active');
-    updateDrawStatus();
-  });
 
   function loadLog() {
     var raw = [];
@@ -446,7 +433,7 @@
         layer = L.polygon(e.path, {
           color: e.flagged ? '#4C7A4E' : '#8B8E7B',
           fillColor: e.flagged ? '#4C7A4E' : '#8B8E7B',
-          weight: 2, fillOpacity: 0.35
+          weight: 2, fillOpacity: 0.45
         }).addTo(map);
       }
       e.layer = layer;
@@ -507,7 +494,7 @@
 
   document.getElementById('export-btn').addEventListener('click', function () {
     if (!savedEntries.length) { alert('Nothing saved yet.'); return; }
-    var rows = [['Label', 'Sq Ft', 'Sq M', 'Flagged (>= threshold)', 'Note']];
+    var rows = [['Label / Address', 'Sq Ft (GFA)', 'Sq M', 'Flagged', 'Note']];
     savedEntries.forEach(function (e) {
       rows.push([e.label || '', Math.round(e.sqft), Math.round(e.sqm), e.flagged ? 'Yes' : 'No', e.note || '']);
     });
@@ -539,9 +526,6 @@
         } else {
           alert('Address not found. Try zooming/panning manually.');
         }
-      })
-      .catch(function () {
-        alert('Network lookup failed. Zoom/pan to address manually.');
       });
   }
 
@@ -573,12 +557,7 @@
           }).addTo(muniGroup);
           muniShown = true;
           statusEl.textContent = 'Loaded municipal boundary line.';
-        } else {
-          statusEl.textContent = 'No polygon available for boundary search.';
         }
-      })
-      .catch(function () {
-        statusEl.textContent = 'Failed to load municipal line (network error).';
       });
   }
 
@@ -607,15 +586,8 @@
 
     boundaryGroup.clearLayers();
 
-    var kiplingLine = L.polyline([
-      [39.8000, -105.1097],
-      [39.6000, -105.1097]
-    ], { color: '#1a1a1a', weight: 4, dashArray: '6, 6', opacity: 0.85 }).bindTooltip("Kipling St Divider", { sticky: true });
-
-    var sixthLine = L.polyline([
-      [39.7257, -105.2000],
-      [39.7257, -105.0000]
-    ], { color: '#1a1a1a', weight: 4, dashArray: '6, 6', opacity: 0.85 }).bindTooltip("6th Ave Divider", { sticky: true });
+    var kiplingLine = L.polyline([[39.8000, -105.1097], [39.6000, -105.1097]], { color: '#1a1a1a', weight: 4, dashArray: '6, 6', opacity: 0.85 }).bindTooltip("Kipling St Divider", { sticky: true });
+    var sixthLine = L.polyline([[39.7257, -105.2000], [39.7257, -105.0000]], { color: '#1a1a1a', weight: 4, dashArray: '6, 6', opacity: 0.85 }).bindTooltip("6th Ave Divider", { sticky: true });
 
     boundaryGroup.addLayer(kiplingLine);
     boundaryGroup.addLayer(sixthLine);
@@ -642,7 +614,7 @@
     boundaryGroup.addTo(map);
     boundariesShown = true;
     btn.textContent = 'Hide section boundaries';
-    statusEl.textContent = 'Section dividers (Kipling / 6th Ave) and team quadrants displayed.';
+    statusEl.textContent = 'Section dividers and team quadrants displayed.';
   }
 
   function renderGeoJsonLayers() {
@@ -651,62 +623,60 @@
     var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
     var count = 0;
 
-    geojsonLayer = L.geoJSON(rawGeojsonData, {
-      style: function(feature) {
-        var sqft = feature.properties ? (feature.properties.STTGRSAREA || 0) : 0;
-        var flagged = sqft >= threshold;
-        return {
-          color: flagged ? '#A23A2C' : '#8B8E7B',
-          fillColor: flagged ? '#A23A2C' : '#8B8E7B',
-          weight: flagged ? 2 : 1,
-          fillOpacity: flagged ? 0.4 : 0.15
-        };
-      },
-      onEachFeature: function(feature, layer) {
-        var props = feature.properties || {};
-        var sqft = props.STTGRSAREA || 0;
-        var addr = (props.PRPADDRESS || 'Unknown Address').trim();
-        var pin = props.PIN || 'N/A';
-        count++;
+    // Robust GeoJSON Parsing
+    try {
+      geojsonLayer = L.geoJSON(rawGeojsonData, {
+        style: function(feature) {
+          var sqft = feature.properties ? (feature.properties.STTGRSAREA || 0) : 0;
+          var flagged = sqft >= threshold;
+          return {
+            color: flagged ? '#A23A2C' : '#8B8E7B',
+            fillColor: flagged ? '#A23A2C' : '#8B8E7B',
+            weight: flagged ? 2 : 1,
+            fillOpacity: flagged ? 0.4 : 0.15
+          };
+        },
+        onEachFeature: function(feature, layer) {
+          var props = feature.properties || {};
+          var sqft = props.STTGRSAREA || 0;
+          var addr = (props.PRPADDRESS || 'Unknown Address').trim();
+          var pin = props.PIN || 'N/A';
+          count++;
 
-        layer.on('click', function(e) {
-          L.DomEvent.stopPropagation(e);
-          var latlngs = layer.getLatLngs()[0];
-          commitEntry(
-            latlngs.map(function(ll) { return { lat: ll.lat, lng: ll.lng }; }),
-            addr,
-            'Local GeoJSON footprint (PIN: ' + pin + ')'
-          );
-        });
+          // Auto Creation and Address Update on Click
+          layer.on('click', function(e) {
+            L.DomEvent.stopPropagation(e);
+            
+            // Sync search bar / address input instantly
+            document.getElementById('address-input').value = addr;
+            
+            // Extract geometry coordinates and automatically save shape
+            var rawLatLngs = layer.getLatLngs();
+            var latlngs = Array.isArray(rawLatLngs[0]) ? rawLatLngs[0] : rawLatLngs;
+            
+            commitEntry(
+              latlngs.map(function(ll) { return { lat: ll.lat, lng: ll.lng }; }),
+              addr,
+              'PIN: ' + pin
+            );
+          });
 
-        var popupDiv = document.createElement('div');
-        popupDiv.className = 'popup-flagged';
-        popupDiv.innerHTML =
-          '<strong>' + (sqft ? Math.round(sqft).toLocaleString() + ' sq ft' : 'Footprint') + '</strong><br>' +
-          addr + '<br>' +
-          '<span style="font-size:11px; color:var(--ink-faint);">' +
-          'PIN: ' + pin +
-          '</span><br>';
+          // Popup displaying Address next to GFA (sq ft)
+          var popupContent = 
+            '<div class="popup-flagged">' +
+              '<strong>Address:</strong> ' + addr + '<br>' +
+              '<strong>GFA:</strong> ' + (sqft ? Math.round(sqft).toLocaleString() + ' sq ft' : 'N/A') + '<br>' +
+              '<span style="font-size:11px; color:var(--ink-faint);">PIN: ' + pin + '</span>' +
+            '</div>';
 
-        var btn = document.createElement('button');
-        btn.className = 'btn primary';
-        btn.textContent = 'Add auto-footprint to my list';
-        btn.addEventListener('click', function() {
-          var latlngs = layer.getLatLngs()[0];
-          commitEntry(
-            latlngs.map(function(ll) { return { lat: ll.lat, lng: ll.lng }; }),
-            addr,
-            'Local GeoJSON footprint (PIN: ' + pin + ')'
-          );
-          layer.closePopup();
-        });
+          layer.bindPopup(popupContent);
+        }
+      }).addTo(scanGroup);
 
-        popupDiv.appendChild(btn);
-        layer.bindPopup(popupDiv);
-      }
-    }).addTo(scanGroup);
-
-    document.getElementById('scan-status').textContent = 'Loaded ' + count.toLocaleString() + ' local building footprints!';
+      document.getElementById('scan-status').textContent = 'Loaded ' + count.toLocaleString() + ' local building footprints!';
+    } catch(err) {
+      document.getElementById('scan-status').textContent = 'Error parsing dataset: ' + err.message;
+    }
   }
 
   function loadLocalGeoJSON() {
@@ -715,11 +685,14 @@
 
     fetch('buildings.geojson')
       .then(function(r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status + ' - make sure buildings.geojson exists in project root');
-        return r.json();
+        if (!r.ok) throw new Error('HTTP ' + r.status + ' - make sure buildings.geojson exists in repository root');
+        return r.text(); // Text conversion prevents parse breaking if LFS pointer string is returned
       })
-      .then(function(data) {
-        rawGeojsonData = data;
+      .then(function(text) {
+        if (text.startsWith('version https://git-lfs')) {
+          throw new Error('File is stored in Git LFS pointer format. Please push raw geojson or download full file.');
+        }
+        rawGeojsonData = JSON.parse(text);
         renderGeoJsonLayers();
       })
       .catch(function(err) {
