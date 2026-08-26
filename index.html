@@ -175,7 +175,7 @@
 
       <div class="panel">
         <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(Jeffco Assessor data)</span></h2>
-        <div class="caveat">Queries Jefferson County's live parcel/assessor feed for the actual recorded building size (not a guess from imagery) and flags anything at or above your threshold. It still can't know which already have a dot on the sandbox map &mdash; check each flagged one there before logging it as missing. Several parcels at one address usually means a condo/HOA complex &mdash; follow the condo protocol for those instead of logging them individually.</div>
+        <div class="caveat">Queries Jefferson County's live parcel/assessor feed for the actual recorded building size (not a guess from imagery), pulls the full owner/parcel record with it, and flags anything at or above your threshold. It still can't know which already have a dot on the sandbox map &mdash; check each flagged one there before logging it as missing. Several parcels at one address usually means a condo/HOA complex &mdash; the popup lets you search Colorado's Secretary of State for the association's registered agent before you log it, per the condo protocol.</div>
         <button class="btn primary" id="scan-btn" style="width:100%;">Scan current view for buildings</button>
         <div id="scan-status" style="margin-top:8px;"></div>
       </div>
@@ -259,6 +259,7 @@
   var BOUNDARY_KEY = 'lakewood-footprint-tool-boundaries-v1';
   var lastFootprintSqft = 0;
   var currentAssessorMatch = null; // Jeffco attributes matched to the current trace, if any
+  var currentSosMatch = null; // Colorado SOS entity record picked for the current trace, if any (condo/HOA only)
   var lookupToken = 0; // guards against a stale async lookup overwriting a newer trace
   var localLayerGroup = null;
   var localBuildingsLoaded = false;
@@ -267,25 +268,28 @@
   // Source: Jeffco "Parcel" feature service (Assessor's Office + Business & Innovation Technologies), CC-BY 4.0.
   var JEFFCO_PARCEL_URL = 'https://gisportal.jeffco.us/server2/rest/services/Parcel/FeatureServer/20/query';
   var JEFFCO_FULL_FIELDS = [
-    'PIN', 'PARCELID', 'PRPADDRESS', 'PRPSTRNUM', 'PRPSTRDIR', 'PRPSTRNAM', 'PRPSTRTYP', 'PRPSTRUNT',
-    'PRPCTYNAM', 'PRPSTENAM', 'PRPZIP5',
-    'OWNNAM', 'OWNNAM2', 'OWNICO', 'DBA',
-    'MAILSTRNBR', 'MAILSTRDIR', 'MAILSTRNAM', 'MAILSTRTYP', 'MAILSTRUNT', 'MAILCTYNAM', 'MAILSTENAM', 'MAILZIP5',
+    'PIN', 'PARCELID', 'PRPADDRESS', 'PRPSTRNUM', 'PRPSTRDIR', 'PRPSTRNAM', 'PRPSTRTYP', 'PRPSTRSFX', 'PRPSTRUNT',
+    'PRPCTYNAM', 'PRPSTENAM', 'PRPZIP5', 'PRPZIP4',
+    'OWNNAM', 'OWNNAM2', 'OWNNAM3', 'OWNICO', 'DBA',
+    'MAILSTRNBR', 'MAILSTRDIR', 'MAILSTRNAM', 'MAILSTRTYP', 'MAILSTRSFX', 'MAILSTRUNT', 'MAILCTYNAM', 'MAILSTENAM', 'MAILZIP5', 'MAILZIP4',
     'SUBNAM',
     'STTYRBLT', 'STTTYPUSE', 'STTGRSAREA', 'STTNBRFLR', 'STTNBRBLDG', 'STTNBRUNT'
   ].join(',');
 
   // ---------- Formatting helpers for assessor records ----------
+  function streetFromParts(num, dir, nam, typ, sfx) {
+    return [num, dir, nam, typ, sfx].filter(Boolean).join(' ');
+  }
   function formatOwnerName(a) {
     if (!a) return '';
-    var parts = [a.OWNNAM, a.OWNNAM2].filter(Boolean);
+    var parts = [a.OWNNAM, a.OWNNAM2, a.OWNNAM3].filter(Boolean);
     var name = parts.join(' / ');
     if (a.OWNICO) name += (name ? ' c/o ' : 'c/o ') + a.OWNICO;
     return name;
   }
   function formatOwnerMailingAddress(a) {
     if (!a) return '';
-    var street = [a.MAILSTRNBR, a.MAILSTRDIR, a.MAILSTRNAM, a.MAILSTRTYP].filter(Boolean).join(' ');
+    var street = streetFromParts(a.MAILSTRNBR, a.MAILSTRDIR, a.MAILSTRNAM, a.MAILSTRTYP, a.MAILSTRSFX);
     if (a.MAILSTRUNT) street += ' ' + a.MAILSTRUNT;
     var cityLine = [a.MAILCTYNAM, [a.MAILSTENAM, a.MAILZIP5].filter(Boolean).join(' ')].filter(Boolean).join(', ');
     return [street, cityLine].filter(Boolean).join(', ');
@@ -294,6 +298,62 @@
     if (!a) return '';
     var cityLine = [a.PRPCTYNAM, [a.PRPSTENAM, a.PRPZIP5].filter(Boolean).join(' ')].filter(Boolean).join(', ');
     return [a.PRPADDRESS, cityLine].filter(Boolean).join(', ');
+  }
+
+  // Best-guess classification from the owner name text — NOT a field the assessor or any
+  // source actually provides, so these are pre-filled suggestions to confirm/correct, not facts.
+  function inferOwnerContactType(ownerName) {
+    var n = (ownerName || '').toUpperCase();
+    if (!n) return '';
+    if (/\b(CITY OF|COUNTY OF|STATE OF|SCHOOL DISTRICT|UNITED STATES|U\.?S\.? GOVERNMENT|DEPT OF|DEPARTMENT OF|JEFFERSON COUNTY|JEFFCO PUBLIC|FEDERAL|MUNICIPAL|TOWN OF|SPECIAL DISTRICT|WATER DISTRICT|FIRE DISTRICT|METRO(?:POLITAN)? DISTRICT|R-1|R-2)\b/.test(n)) return 'Government';
+    if (/\b(HOA|HOMEOWNERS|CONDOMINIUM|CONDO ASSOC|ASSOCIATION|ASSN)\b/.test(n)) return 'HOA/Condo Association';
+    if (/\b(LLC|L\.L\.C\.|INC|INCORPORATED|CORP|CORPORATION|\bLP\b|L\.P\.|LLP|COMPANY|TRUST|PARTNERS|LTD|LIMITED)\b/.test(n)) return 'Business';
+    return 'Individual';
+  }
+  function inferGovernmentType(ownerName) {
+    var n = (ownerName || '').toUpperCase();
+    if (/\b(UNITED STATES|U\.?S\.? GOVERNMENT|FEDERAL|USPS|VETERANS AFFAIRS|BUREAU OF)\b/.test(n)) return 'Federal';
+    if (/\b(STATE OF COLORADO|COLORADO DEPT|CDOT|COLORADO STATE)\b/.test(n)) return 'State';
+    if (/\b(JEFFERSON COUNTY|JEFFCO COUNTY|COUNTY OF)\b/.test(n)) return 'County';
+    if (/\b(CITY OF|TOWN OF|MUNICIPAL)\b/.test(n)) return 'Municipal';
+    if (/\b(SCHOOL DISTRICT|R-1|R-2|PUBLIC SCHOOLS)\b/.test(n)) return 'School District';
+    if (/\b(SPECIAL DISTRICT|METRO(?:POLITAN)? DISTRICT|WATER DISTRICT|FIRE DISTRICT|SANITATION DISTRICT)\b/.test(n)) return 'Special District';
+    return '';
+  }
+
+  // ---------- Colorado Secretary of State — registered business entities (open data) ----------
+  // Source: data.colorado.gov "Business Entities in Colorado" (Socrata open dataset, refreshed daily,
+  // sourced from SOS filings) — a free, CORS-open JSON API, unlike the SOS's own search page which is a
+  // session-based web form with no public API. Used to pull registered-agent info for condo/HOA associations.
+  var COLORADO_SOS_URL = 'https://data.colorado.gov/resource/4ykn-tg5h.json';
+  function formatSosAgentName(r) {
+    if (!r) return '';
+    return [r.agentfirstname, r.agentmiddlename, r.agentlastname].filter(Boolean).join(' ');
+  }
+  function searchColoradoSOS(name) {
+    var q = (name || '').trim();
+    if (!q) return Promise.resolve([]);
+    var esc = q.replace(/'/g, "''");
+    var params = new URLSearchParams({
+      '$where': "upper(entityname) like upper('%" + esc + "%')",
+      '$limit': '25'
+    });
+    return fetch(COLORADO_SOS_URL + '?' + params.toString())
+      .then(function (r) { return r.json(); })
+      .then(function (rows) {
+        if (!Array.isArray(rows)) return [];
+        var qUpper = q.toUpperCase();
+        rows.sort(function (a, b) {
+          var aGood = a.entitystatus === 'Good Standing' ? 0 : 1;
+          var bGood = b.entitystatus === 'Good Standing' ? 0 : 1;
+          if (aGood !== bGood) return aGood - bGood;
+          var aExact = (a.entityname || '').toUpperCase() === qUpper ? 0 : 1;
+          var bExact = (b.entityname || '').toUpperCase() === qUpper ? 0 : 1;
+          if (aExact !== bExact) return aExact - bExact;
+          return (a.entityname || '').length - (b.entityname || '').length;
+        });
+        return rows.slice(0, 8);
+      });
   }
 
   function jeffcoQuery(paramsObj) {
@@ -445,6 +505,116 @@
     });
   }
 
+  // Appends a small "search Colorado SOS" control into `container`, seeded with nameGuess.
+  // Calls onPicked(record) when the user selects one of the returned candidates. Shared between
+  // the manual-trace assessor-check panel and the auto-detect/local-layer popups.
+  function appendSosLookup(container, nameGuess, onPicked) {
+    var wrap = document.createElement('div');
+    wrap.style.marginTop = '8px';
+    wrap.style.paddingTop = '8px';
+    wrap.style.borderTop = '1px dashed rgba(0,0,0,0.15)';
+
+    var label = document.createElement('div');
+    label.style.fontSize = '11px';
+    label.style.color = 'var(--ink-faint)';
+    label.textContent = 'Likely a condo/HOA — search Colorado SOS for the association\'s registered agent:';
+    wrap.appendChild(label);
+
+    var row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.gap = '4px';
+    row.style.marginTop = '4px';
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = nameGuess || '';
+    input.style.flex = '1';
+    input.style.fontSize = '12px';
+    input.style.marginBottom = '0';
+    var btn = document.createElement('button');
+    btn.className = 'btn';
+    btn.type = 'button';
+    btn.textContent = 'Search';
+    row.appendChild(input); row.appendChild(btn);
+    wrap.appendChild(row);
+
+    var resultsEl = document.createElement('div');
+    resultsEl.style.marginTop = '4px';
+    wrap.appendChild(resultsEl);
+
+    function doSearch() {
+      resultsEl.textContent = 'Searching Colorado SOS…';
+      searchColoradoSOS(input.value).then(function (matches) {
+        resultsEl.innerHTML = '';
+        if (!matches.length) { resultsEl.textContent = 'No matches — try a shorter name or a different spelling.'; return; }
+        matches.forEach(function (m) {
+          var item = document.createElement('div');
+          item.style.padding = '4px 0';
+          item.style.borderBottom = '1px solid rgba(0,0,0,0.08)';
+          var text = document.createElement('div');
+          text.style.fontSize = '12px';
+          text.innerHTML = '<strong>' + (m.entityname || '') + '</strong> (' + (m.entitystatus || '—') + ')<br>Registered agent: ' + (formatSosAgentName(m) || '—');
+          item.appendChild(text);
+          var pickBtn = document.createElement('button');
+          pickBtn.className = 'btn';
+          pickBtn.type = 'button';
+          pickBtn.style.fontSize = '11px';
+          pickBtn.style.marginTop = '2px';
+          pickBtn.textContent = 'Use this match';
+          pickBtn.addEventListener('click', function () { onPicked(m); });
+          item.appendChild(pickBtn);
+          resultsEl.appendChild(item);
+        });
+      }).catch(function () { resultsEl.textContent = 'Search failed (network issue) — try again.'; });
+    }
+    btn.addEventListener('click', doSearch);
+    if (nameGuess) doSearch();
+    return wrap;
+  }
+
+  // Rebuilds the #assessor-check panel from currentAssessorMatch / currentSosMatch — pure render,
+  // no network call, so it's safe to call again after picking (or clearing) a Colorado SOS match.
+  function renderAssessorCheck() {
+    var checkEl = document.getElementById('assessor-check');
+    var attrs = currentAssessorMatch;
+    if (!attrs) { checkEl.style.display = 'none'; checkEl.innerHTML = ''; return; }
+    var ownerName = formatOwnerName(attrs);
+    var contactType = inferOwnerContactType(ownerName);
+    var lines = [];
+    lines.push('<strong>Parcel ' + (attrs.PIN || attrs.PARCELID || '—') + '</strong>');
+    if (formatSitusAddress(attrs)) lines.push(formatSitusAddress(attrs));
+    if (ownerName) lines.push('Owner: ' + ownerName + (contactType ? ' <span style="color:var(--ink-faint);">(' + contactType + ' — best guess, confirm before logging)</span>' : ''));
+    if (formatOwnerMailingAddress(attrs)) lines.push('Owner mailing address: ' + formatOwnerMailingAddress(attrs));
+    if (attrs.SUBNAM) lines.push('Subdivision: ' + attrs.SUBNAM);
+    lines.push([attrs.STTTYPUSE, attrs.STTYRBLT ? 'built ' + attrs.STTYRBLT : null].filter(Boolean).join(' · '));
+    if (attrs.STTGRSAREA) lines.push('Assessor recorded gross area: ' + Math.round(attrs.STTGRSAREA).toLocaleString() + ' sq ft — compare against your estimate above.');
+    checkEl.innerHTML = lines.filter(Boolean).join('<br>');
+    checkEl.style.display = '';
+
+    if (currentSosMatch) {
+      var confirmDiv = document.createElement('div');
+      confirmDiv.style.marginTop = '8px';
+      confirmDiv.style.paddingTop = '8px';
+      confirmDiv.style.borderTop = '1px dashed rgba(0,0,0,0.15)';
+      var confirmText = document.createElement('div');
+      confirmText.style.fontSize = '12px';
+      confirmText.innerHTML = '<strong>Colorado SOS match:</strong> ' + (currentSosMatch.entityname || '') +
+        ' (' + (currentSosMatch.entitystatus || '—') + ')<br>Registered agent: ' + (formatSosAgentName(currentSosMatch) || '—');
+      confirmDiv.appendChild(confirmText);
+      var clearBtn = document.createElement('button');
+      clearBtn.className = 'btn'; clearBtn.type = 'button';
+      clearBtn.style.marginTop = '4px'; clearBtn.style.fontSize = '11px';
+      clearBtn.textContent = 'Clear / search again';
+      clearBtn.addEventListener('click', function () { currentSosMatch = null; renderAssessorCheck(); });
+      confirmDiv.appendChild(clearBtn);
+      checkEl.appendChild(confirmDiv);
+    } else if (attrs.SUBNAM || contactType === 'HOA/Condo Association') {
+      checkEl.appendChild(appendSosLookup(checkEl, attrs.SUBNAM || ownerName, function (m) {
+        currentSosMatch = m;
+        renderAssessorCheck();
+      }));
+    }
+  }
+
   function runFloorLookup() {
     if (currentPath.length < 3) return;
     var statusEl = document.getElementById('floors-status');
@@ -458,21 +628,13 @@
       .then(function (attrs) {
         if (myToken !== lookupToken) return; // a newer trace superseded this lookup
         currentAssessorMatch = attrs;
+        currentSosMatch = null;
         if (attrs) {
           if (attrs.STTNBRFLR) document.getElementById('floors-input').value = attrs.STTNBRFLR;
           statusEl.textContent = 'Matched PIN ' + (attrs.PIN || attrs.PARCELID || '—') +
             (attrs.STTNBRFLR ? ' — floors auto-filled.' : ' — no floor count on file, enter it manually if known.') +
             ' Override if this trace covers a different building.';
-          var lines = [];
-          lines.push('<strong>Parcel ' + (attrs.PIN || attrs.PARCELID || '—') + '</strong>');
-          if (formatSitusAddress(attrs)) lines.push(formatSitusAddress(attrs));
-          if (formatOwnerName(attrs)) lines.push('Owner: ' + formatOwnerName(attrs));
-          if (formatOwnerMailingAddress(attrs)) lines.push('Owner mailing address: ' + formatOwnerMailingAddress(attrs));
-          if (attrs.SUBNAM) lines.push('Subdivision: ' + attrs.SUBNAM);
-          lines.push([attrs.STTTYPUSE, attrs.STTYRBLT ? 'built ' + attrs.STTYRBLT : null].filter(Boolean).join(' · '));
-          if (attrs.STTGRSAREA) lines.push('Assessor recorded gross area: ' + Math.round(attrs.STTGRSAREA).toLocaleString() + ' sq ft — compare against your estimate above.');
-          checkEl.innerHTML = lines.filter(Boolean).join('<br>');
-          checkEl.style.display = '';
+          renderAssessorCheck();
         } else {
           statusEl.textContent = 'No Jeffco parcel matched this location — enter floors manually if known.';
         }
@@ -496,6 +658,7 @@
     document.getElementById('floors-input').value = 1;
     document.getElementById('assessor-check').style.display = 'none';
     currentAssessorMatch = null;
+    currentSosMatch = null;
     updateLiveArea();
     runFloorLookup();
   }
@@ -557,21 +720,71 @@
     return { sqft: sqft, flagged: flagged };
   }
 
-  // Builds the CSV/record "extra" fields from a Jeffco attributes object (may be null/partial).
-  function extraFromAssessor(attrs, footprintSqft) {
-    if (!attrs) return { footprintSqft: footprintSqft || '' };
-    return {
-      pin: attrs.PIN || attrs.PARCELID || '',
-      situsAddress: formatSitusAddress(attrs),
-      ownerName: formatOwnerName(attrs),
-      ownerAddress: formatOwnerMailingAddress(attrs),
-      subdivision: attrs.SUBNAM || '',
-      yearBuilt: attrs.STTYRBLT || '',
-      useType: attrs.STTTYPUSE || '',
-      floors: attrs.STTNBRFLR || '',
+  // Builds the CSV/record "extra" fields from a Jeffco attributes object (may be null/partial)
+  // plus an optional Colorado SOS entity record for condo/HOA associations. Field names match
+  // the Missing IDs spreadsheet's own column headers exactly, so the CSV can be pasted straight in.
+  function extraFromAssessor(attrs, footprintSqft, sosMatch) {
+    var out = {
+      // our own tracking fields, not part of the spreadsheet's official schema
+      subdivision: attrs ? (attrs.SUBNAM || '') : '',
+      floors: attrs ? (attrs.STTNBRFLR || '') : '',
       footprintSqft: footprintSqft || '',
-      assessorGrossArea: attrs.STTGRSAREA || ''
+      // official schema
+      Parcel_Number: '', Year_Built: '', Primary_Use_Type: '', Government_Type: '', Assessor_GFA: '',
+      Building_Street: '', Building_Suite_Apt: '', Building_City: '', Building_County: '', Building_State: '', Building_Postal_Code: '',
+      Owner_Contact_Type: '', Owner_Name: '', Owner_In_Care_Of: '', Owner_Street: '', Owner_Suite_Apt: '',
+      Owner_City: '', Owner_County: '', Owner_State_Province: '', Owner_Postal_Code: '',
+      Condo_Association_Name: '', Condo_Association_In_Care_Of: '', Condo_Association_Street: '', Condo_Association_Suite_Apt: '',
+      Condo_Association_City: '', Condo_Association_State_Province: '', Condo_Association_Postal_Code: '',
+      Registered_Agent_Name: '', Registered_Agent_In_Care_Of: '', Registered_Agent_Street: '', Registered_Agent_Suite_Apt: '',
+      Registered_Agent_City: '', Registered_Agent_State_Province: '', Registered_Agent_Postal_Code: ''
     };
+    if (attrs) {
+      var ownerNameOnly = [attrs.OWNNAM, attrs.OWNNAM2, attrs.OWNNAM3].filter(Boolean).join(' / ');
+      var zip = attrs.PRPZIP5 ? (attrs.PRPZIP5 + (attrs.PRPZIP4 ? '-' + attrs.PRPZIP4 : '')) : '';
+      var mailZip = attrs.MAILZIP5 ? (attrs.MAILZIP5 + (attrs.MAILZIP4 ? '-' + attrs.MAILZIP4 : '')) : '';
+      Object.assign(out, {
+        Parcel_Number: attrs.PIN || attrs.PARCELID || '',
+        Year_Built: attrs.STTYRBLT || '',
+        Primary_Use_Type: attrs.STTTYPUSE || '',
+        Government_Type: inferGovernmentType(ownerNameOnly),
+        Assessor_GFA: attrs.STTGRSAREA || '',
+        Building_Street: streetFromParts(attrs.PRPSTRNUM, attrs.PRPSTRDIR, attrs.PRPSTRNAM, attrs.PRPSTRTYP, attrs.PRPSTRSFX),
+        Building_Suite_Apt: attrs.PRPSTRUNT || '',
+        Building_City: attrs.PRPCTYNAM || '',
+        Building_County: 'Jefferson',
+        Building_State: attrs.PRPSTENAM || 'CO',
+        Building_Postal_Code: zip,
+        Owner_Contact_Type: inferOwnerContactType(ownerNameOnly),
+        Owner_Name: ownerNameOnly,
+        Owner_In_Care_Of: attrs.OWNICO || '',
+        Owner_Street: streetFromParts(attrs.MAILSTRNBR, attrs.MAILSTRDIR, attrs.MAILSTRNAM, attrs.MAILSTRTYP, attrs.MAILSTRSFX),
+        Owner_Suite_Apt: attrs.MAILSTRUNT || '',
+        Owner_City: attrs.MAILCTYNAM || '',
+        Owner_County: '', // not present in Jeffco's assessor data — fill in by hand if it matters
+        Owner_State_Province: attrs.MAILSTENAM || '',
+        Owner_Postal_Code: mailZip
+      });
+    }
+    if (sosMatch) {
+      Object.assign(out, {
+        Condo_Association_Name: sosMatch.entityname || '',
+        Condo_Association_In_Care_Of: '', // not exposed by this dataset
+        Condo_Association_Street: sosMatch.principaladdress1 || '',
+        Condo_Association_Suite_Apt: '', // already folded into the street line above, if present
+        Condo_Association_City: sosMatch.principalcity || '',
+        Condo_Association_State_Province: sosMatch.principalstate || '',
+        Condo_Association_Postal_Code: sosMatch.principalzipcode || '',
+        Registered_Agent_Name: formatSosAgentName(sosMatch),
+        Registered_Agent_In_Care_Of: '',
+        Registered_Agent_Street: sosMatch.agentprincipaladdress1 || sosMatch.agentmailingaddress1 || '',
+        Registered_Agent_Suite_Apt: '',
+        Registered_Agent_City: sosMatch.agentprincipalcity || sosMatch.agentmailingcity || '',
+        Registered_Agent_State_Province: sosMatch.agentprincipalstate || sosMatch.agentmailingstate || '',
+        Registered_Agent_Postal_Code: sosMatch.agentprincipalzipcode || sosMatch.agentmailingzipcode || ''
+      });
+    }
+    return out;
   }
 
   document.getElementById('save-trace-btn').addEventListener('click', function () {
@@ -596,11 +809,12 @@
       document.getElementById('label-input').value.trim(),
       combinedNote,
       gfaSqft,
-      extraFromAssessor(currentAssessorMatch, Math.round(footprintSqft))
+      extraFromAssessor(currentAssessorMatch, Math.round(footprintSqft), currentSosMatch)
     );
     currentMarkers.forEach(function (m) { map.removeLayer(m); });
     currentPath = []; currentMarkers = []; currentShape = null; pendingFinished = false;
     currentAssessorMatch = null;
+    currentSosMatch = null;
     document.getElementById('trace-panel').classList.remove('active');
     updateDrawStatus();
   });
@@ -674,20 +888,58 @@
     });
   }
 
+  // Column order: our own tracking fields first, then the Missing IDs spreadsheet's exact
+  // official schema (so that block can be selected and pasted straight into the sheet),
+  // standard-building/multifamily fields first, condo-only fields last.
+  var CSV_COLUMNS = [
+    ['Label', function (e) { return e.label || ''; }],
+    ['Subdivision', function (e) { return e.subdivision || ''; }],
+    ['Floors', function (e) { return e.floors || ''; }],
+    ['Footprint (sq ft)', function (e) { return e.footprintSqft || ''; }],
+    ['Logged Sq Ft', function (e) { return Math.round(e.sqft); }],
+    ['Flagged (>= threshold)', function (e) { return e.flagged ? 'Yes' : 'No'; }],
+    ['Note', function (e) { return e.note || ''; }],
+    ['Parcel_Number', function (e) { return e.Parcel_Number || ''; }],
+    ['Year_Built', function (e) { return e.Year_Built || ''; }],
+    ['Primary_Use_Type', function (e) { return e.Primary_Use_Type || ''; }],
+    ['Government_Type', function (e) { return e.Government_Type || ''; }],
+    ['Assessor_GFA', function (e) { return e.Assessor_GFA || ''; }],
+    ['Building_Street', function (e) { return e.Building_Street || ''; }],
+    ['Building_Suite_Apt', function (e) { return e.Building_Suite_Apt || ''; }],
+    ['Building_City', function (e) { return e.Building_City || ''; }],
+    ['Building_County', function (e) { return e.Building_County || ''; }],
+    ['Building_State', function (e) { return e.Building_State || ''; }],
+    ['Building_Postal_Code', function (e) { return e.Building_Postal_Code || ''; }],
+    ['Owner_Contact_Type', function (e) { return e.Owner_Contact_Type || ''; }],
+    ['Owner_Name', function (e) { return e.Owner_Name || ''; }],
+    ['Owner_In_Care_Of', function (e) { return e.Owner_In_Care_Of || ''; }],
+    ['Owner_Street', function (e) { return e.Owner_Street || ''; }],
+    ['Owner_Suite_Apt', function (e) { return e.Owner_Suite_Apt || ''; }],
+    ['Owner_City', function (e) { return e.Owner_City || ''; }],
+    ['Owner_County', function (e) { return e.Owner_County || ''; }],
+    ['Owner_State_Province', function (e) { return e.Owner_State_Province || ''; }],
+    ['Owner_Postal_Code', function (e) { return e.Owner_Postal_Code || ''; }],
+    ['Condo_Association_Name', function (e) { return e.Condo_Association_Name || ''; }],
+    ['Condo_Association_In_Care_Of', function (e) { return e.Condo_Association_In_Care_Of || ''; }],
+    ['Condo_Association_Street', function (e) { return e.Condo_Association_Street || ''; }],
+    ['Condo_Association_Suite_Apt', function (e) { return e.Condo_Association_Suite_Apt || ''; }],
+    ['Condo_Association_City', function (e) { return e.Condo_Association_City || ''; }],
+    ['Condo_Association_State_Province', function (e) { return e.Condo_Association_State_Province || ''; }],
+    ['Condo_Association_Postal_Code', function (e) { return e.Condo_Association_Postal_Code || ''; }],
+    ['Registered_Agent_Name', function (e) { return e.Registered_Agent_Name || ''; }],
+    ['Registered_Agent_In_Care_Of', function (e) { return e.Registered_Agent_In_Care_Of || ''; }],
+    ['Registered_Agent_Street', function (e) { return e.Registered_Agent_Street || ''; }],
+    ['Registered_Agent_Suite_Apt', function (e) { return e.Registered_Agent_Suite_Apt || ''; }],
+    ['Registered_Agent_City', function (e) { return e.Registered_Agent_City || ''; }],
+    ['Registered_Agent_State_Province', function (e) { return e.Registered_Agent_State_Province || ''; }],
+    ['Registered_Agent_Postal_Code', function (e) { return e.Registered_Agent_Postal_Code || ''; }]
+  ];
+
   document.getElementById('export-btn').addEventListener('click', function () {
     if (!savedEntries.length) { alert('Nothing saved yet.'); return; }
-    var rows = [[
-      'Label', 'PIN', 'Situs Address', 'Owner Name', 'Owner Mailing Address', 'Subdivision',
-      'Year Built', 'Use Type', 'Floors', 'Footprint (sq ft)', 'Assessor Gross Area (sq ft)',
-      'Logged Sq Ft', 'Flagged (>= threshold)', 'Note'
-    ]];
+    var rows = [CSV_COLUMNS.map(function (c) { return c[0]; })];
     savedEntries.forEach(function (e) {
-      rows.push([
-        e.label || '', e.pin || '', e.situsAddress || '', e.ownerName || '', e.ownerAddress || '',
-        e.subdivision || '', e.yearBuilt || '', e.useType || '', e.floors || '',
-        e.footprintSqft || '', e.assessorGrossArea || '',
-        Math.round(e.sqft), e.flagged ? 'Yes' : 'No', e.note || ''
-      ]);
+      rows.push(CSV_COLUMNS.map(function (c) { return c[1](e); }));
     });
     var csv = rows.map(function (r) {
       return r.map(function (v) {
@@ -864,39 +1116,68 @@
       var sqft = attrs.STTGRSAREA || 0;
       var floors = attrs.STTNBRFLR || null;
       var perFloor = (floors && sqft) ? Math.round(sqft / floors) : null;
+      var ownerName = formatOwnerName(attrs);
+      var contactType = inferOwnerContactType(ownerName);
+      var isCondoLike = likelyCondo || contactType === 'HOA/Condo Association';
       var lines = [];
       lines.push('<strong>' + (sqft ? Math.round(sqft).toLocaleString() + ' sq ft' : 'size unknown') + '</strong>' + (sqft ? ' (assessor gross area)' : ''));
       lines.push(formatSitusAddress(attrs) || addr || '(no address on file)');
       lines.push('PIN ' + (attrs.PIN || attrs.PARCELID || '—') + (attrs.STTYRBLT ? ' · Built ' + attrs.STTYRBLT : ''));
       var typeLine = [attrs.STTTYPUSE, floors ? floors + ' floor(s)' + (perFloor ? ' (≈' + perFloor.toLocaleString() + ' sq ft/floor)' : '') : null].filter(Boolean).join(' · ');
       if (typeLine) lines.push(typeLine);
-      if (formatOwnerName(attrs)) lines.push('Owner: ' + formatOwnerName(attrs));
+      if (ownerName) lines.push('Owner: ' + ownerName + (contactType ? ' <span style="color:var(--ink-faint);">(' + contactType + ' — best guess)</span>' : ''));
       if (formatOwnerMailingAddress(attrs)) lines.push('Owner mailing address: ' + formatOwnerMailingAddress(attrs));
       if (attrs.SUBNAM) lines.push('Subdivision: ' + attrs.SUBNAM);
-      if (likelyCondo) lines.push('<strong style="color:var(--accent-ink);">' + addressCounts[addr] + ' parcels at this address — likely a condo/HOA. Use the condo protocol instead of logging this parcel directly.</strong>');
+      if (likelyCondo) lines.push('<strong style="color:var(--accent-ink);">' + addressCounts[addr] + ' parcels at this address — likely a condo/HOA.</strong> Search Colorado SOS below for the association\'s registered agent before logging, per the condo protocol.');
       lines.push('<span style="color:var(--ink-faint);">Still check the sandbox map before treating this as missing.</span>');
       var html = lines.filter(Boolean).join('<br>');
       if (needsEnrichment && !attrs._enriched) html += '<br><span style="color:var(--ink-faint);">Loading full assessor record…</span>';
       popupDiv.innerHTML = html;
-      if (!likelyCondo) {
-        var btn = document.createElement('button');
-        btn.className = 'btn primary';
-        btn.textContent = 'Add to my list';
-        btn.addEventListener('click', function () {
-          commitEntry(
-            latlngs,
-            formatSitusAddress(attrs) || addr || ('PIN ' + (attrs.PIN || attrs.PARCELID || '')),
-            'PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ' · ' + (attrs.STTTYPUSE || 'Unknown use') +
-              ' · Built ' + (attrs.STTYRBLT || '—') + (floors ? ' · ' + floors + ' floor(s)' : '') +
-              ' · Owner: ' + (formatOwnerName(attrs) || '—') +
-              ' · Assessor recorded gross area (source: Jeffco parcel data)',
-            sqft,
-            extraFromAssessor(attrs, '')
-          );
-          poly.closePopup();
-        });
-        popupDiv.appendChild(btn);
+
+      if (isCondoLike) {
+        if (attrs._sosMatch) {
+          var confirmDiv = document.createElement('div');
+          confirmDiv.style.marginTop = '8px';
+          confirmDiv.style.paddingTop = '8px';
+          confirmDiv.style.borderTop = '1px dashed rgba(0,0,0,0.15)';
+          var confirmText = document.createElement('div');
+          confirmText.style.fontSize = '12px';
+          confirmText.innerHTML = '<strong>Colorado SOS match:</strong> ' + (attrs._sosMatch.entityname || '') +
+            ' (' + (attrs._sosMatch.entitystatus || '—') + ')<br>Registered agent: ' + (formatSosAgentName(attrs._sosMatch) || '—');
+          confirmDiv.appendChild(confirmText);
+          var clearBtn = document.createElement('button');
+          clearBtn.className = 'btn'; clearBtn.type = 'button';
+          clearBtn.style.marginTop = '4px'; clearBtn.style.fontSize = '11px';
+          clearBtn.textContent = 'Clear / search again';
+          clearBtn.addEventListener('click', function () { attrs._sosMatch = null; refresh(); });
+          confirmDiv.appendChild(clearBtn);
+          popupDiv.appendChild(confirmDiv);
+        } else {
+          popupDiv.appendChild(appendSosLookup(popupDiv, attrs.SUBNAM || ownerName, function (m) {
+            attrs._sosMatch = m;
+            refresh();
+          }));
+        }
       }
+
+      var btn = document.createElement('button');
+      btn.className = 'btn primary';
+      btn.style.marginTop = '8px';
+      btn.textContent = 'Add to my list';
+      btn.addEventListener('click', function () {
+        commitEntry(
+          latlngs,
+          formatSitusAddress(attrs) || addr || ('PIN ' + (attrs.PIN || attrs.PARCELID || '')),
+          'PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ' · ' + (attrs.STTTYPUSE || 'Unknown use') +
+            ' · Built ' + (attrs.STTYRBLT || '—') + (floors ? ' · ' + floors + ' floor(s)' : '') +
+            ' · Owner: ' + (ownerName || '—') +
+            ' · Assessor recorded gross area (source: Jeffco parcel data)',
+          sqft,
+          extraFromAssessor(attrs, '', attrs._sosMatch)
+        );
+        poly.closePopup();
+      });
+      popupDiv.appendChild(btn);
       try { if (poly.isPopupOpen && poly.isPopupOpen()) poly.getPopup().update(); } catch (e) {}
     }
     refresh();
