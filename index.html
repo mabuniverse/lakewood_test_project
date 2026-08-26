@@ -1,115 +1,142 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Building Footprint, Zoning & Measurement Tool</title>
-    
-    <!-- Leaflet & Drawing UI -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
-    
-    <!-- PyScript CDN -->
-    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
-    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Building Footprint Tool</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+  :root {
+    --bg: #F0EFE3;
+    --surface: #FBFAF3;
+    --ink: #22261C;
+    --ink-soft: #5B5F4F;
+    --ink-faint: #8B8E7B;
+    --line: #DAD8C4;
+    --accent: #A6741E;
+    --accent-ink: #6E4C14;
+    --accent-soft: #EFE1BE;
+    --teal: #3D6B62;
+    --teal-soft: #DCE9E4;
+    --good: #4C7A4E;
+    --good-soft: #DFEBDC;
+    --danger: #A23A2C;
+    --danger-soft: #F3DCD5;
+    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1B1D15; --surface: #23261C; --ink: #EBE9DC; --ink-soft: #B7B6A4; --ink-faint: #82836F;
+      --line: #3A3D2E; --accent: #D6A94E; --accent-ink: #F0D89C; --accent-soft: #3A3018;
+      --teal: #7FB0A4; --teal-soft: #223229; --good: #8FC08C; --good-soft: #223522;
+      --danger: #E08B78; --danger-soft: #3A241E;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+  #app { display: flex; flex-direction: column; height: 100vh; }
 
-    <!-- Configure Python Dependencies (Pandas & Requests for PyScript) -->
-    <py-config>
-        packages = ["pandas", "requests"]
-    </py-config>
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--line);
+    flex: none;
+  }
+  header .title { display: flex; flex-direction: column; }
+  header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+  header .sub { font-size: 12px; color: var(--ink-faint); }
 
-    <style>
-      :root {
-        --bg: #F0EFE3;
-        --surface: #FBFAF3;
-        --ink: #22261C;
-        --ink-soft: #5B5F4F;
-        --ink-faint: #8B8E7B;
-        --line: #DAD8C4;
-        --accent: #A6741E;
-        --accent-ink: #6E4C14;
-        --accent-soft: #EFE1BE;
-        --teal: #3D6B62;
-        --teal-soft: #DCE9E4;
-        --good: #4C7A4E;
-        --good-soft: #DFEBDC;
-        --danger: #A23A2C;
-        --danger-soft: #F3DCD5;
-        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #1B1D15; --surface: #23261C; --ink: #EBE9DC; --ink-soft: #B7B6A4; --ink-faint: #82836F;
-          --line: #3A3D2E; --accent: #D6A94E; --accent-ink: #F0D89C; --accent-soft: #3A3018;
-          --teal: #7FB0A4; --teal-soft: #223229; --good: #8FC08C; --good-soft: #223522;
-          --danger: #E08B78; --danger-soft: #3A241E;
-        }
-      }
-      * { box-sizing: border-box; }
-      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
-      #app { display: flex; flex-direction: column; height: 100vh; }
+  #layout { flex: 1; display: flex; min-height: 0; }
+  #map { flex: 1 1 auto; min-width: 0; background: #222; cursor: crosshair; }
 
-      header {
-        display: flex; align-items: center; justify-content: space-between;
-        gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--line);
-        flex: none;
-      }
-      header .title { display: flex; flex-direction: column; }
-      header h1 { font-size: 15px; margin: 0; font-weight: 700; }
-      header .sub { font-size: 12px; color: var(--ink-faint); }
+  #sidebar {
+    width: 360px; flex: none; background: var(--surface); border-left: 1px solid var(--line);
+    display: flex; flex-direction: column; overflow-y: auto;
+  }
+  .panel { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+  .panel h2 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); margin: 0 0 10px; }
 
-      #layout { flex: 1; display: flex; min-height: 0; }
-      #map { flex: 1 1 auto; min-width: 0; background: #f8f9fa; cursor: crosshair; }
+  label.field-label { display: block; font-size: 12px; color: var(--ink-soft); margin-bottom: 4px; }
+  input[type="text"], input[type="number"] {
+    width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--bg); color: var(--ink); font-size: 13.5px; margin-bottom: 10px;
+  }
+  input:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
 
-      #sidebar {
-        width: 380px; flex: none; background: var(--surface); border-left: 1px solid var(--line);
-        display: flex; flex-direction: column; overflow-y: auto;
-      }
-      .panel { padding: 14px 16px; border-bottom: 1px solid var(--line); }
-      .panel h2 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); margin: 0 0 10px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
 
-      label.field-label { display: block; font-size: 11px; font-weight: 600; color: var(--ink-soft); margin-bottom: 2px; text-transform: uppercase; }
-      input[type="text"], input[type="number"], select {
-        width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
-        background: var(--bg); color: var(--ink); font-size: 12px; margin-bottom: 8px;
-      }
-      input:focus, select:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
+  button.btn {
+    padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink); font-size: 13px; cursor: pointer; font-weight: 500;
+  }
+  button.btn:hover { border-color: var(--teal); }
+  button.btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
+  button.btn.primary:hover { opacity: .9; }
+  button.btn.danger { color: var(--danger); }
+  button.btn:disabled { opacity: .45; cursor: not-allowed; }
 
-      .row { display: flex; gap: 8px; }
-      .row > * { flex: 1; }
+  .hint { font-size: 12px; color: var(--ink-faint); margin-top: -4px; margin-bottom: 8px; }
 
-      button.btn {
-        padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
-        background: var(--bg); color: var(--ink); font-size: 12.5px; cursor: pointer; font-weight: 500;
-      }
-      button.btn:hover { border-color: var(--teal); }
-      button.btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
-      button.btn.primary:hover { opacity: .9; }
-      button.btn.danger { color: var(--danger); }
-      button.btn:disabled { opacity: .45; cursor: not-allowed; }
+  #trace-panel { display: none; }
+  #trace-panel.active { display: block; }
+  .area-readout { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
+  .area-readout .unit { font-size: 13px; font-weight: 500; color: var(--ink-faint); }
+  .area-sub { font-size: 12px; color: var(--ink-faint); margin-bottom: 10px; }
 
-      .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 280px; overflow-y: auto; padding-right: 4px; border: 1px solid var(--line); padding: 8px; border-radius: 6px; background: var(--bg); }
-      .field-grid .full-width { grid-column: span 2; }
+  .flag-badge {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600;
+    padding: 5px 10px; border-radius: 100px; margin-bottom: 12px;
+  }
+  .flag-badge.yes { background: var(--good-soft); color: var(--good); }
+  .flag-badge.no { background: var(--line); color: var(--ink-soft); }
 
-      #scan-status { font-size: 12px; color: var(--ink-soft); margin-top: 6px; }
+  #draw-status { font-size: 12.5px; color: var(--ink-soft); background: var(--accent-soft); color: var(--accent-ink);
+    border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
 
-      table#log-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-      table#log-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint); padding: 6px 4px; border-bottom: 1px solid var(--line); }
-      table#log-table td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
-      table#log-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-      table#log-table button.del { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 11px; padding: 2px; }
-      #log-empty { font-size: 12px; color: var(--ink-faint); padding: 4px; }
+  table#log-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  table#log-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint); padding: 6px 4px; border-bottom: 1px solid var(--line); }
+  table#log-table td { padding: 7px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table#log-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table#log-table tr.flagged td.num { color: var(--good); font-weight: 700; }
+  table#log-table button.del { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 12px; padding: 2px; }
+  #log-empty { font-size: 12.5px; color: var(--ink-faint); padding: 4px; }
 
-      #export-row { padding: 12px 16px; }
-      .caveat { font-size: 11.5px; color: var(--accent-ink); background: var(--accent-soft); border-radius: 6px; padding: 8px; margin-bottom: 10px; line-height: 1.4; }
-    </style>
+  #export-row { padding: 12px 16px; }
+
+  .vertex-icon {
+    width: 12px; height: 12px; border-radius: 50%;
+    background: #fff; border: 2px solid var(--teal); box-shadow: 0 0 0 2px rgba(0,0,0,.25);
+    cursor: grab;
+  }
+
+  #boundary-status, #scan-status {
+    font-size: 12.5px; color: var(--ink-soft); margin-bottom: 10px; line-height: 1.5;
+  }
+  .legend-swatches { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+  .legend-dot { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  .legend-row .who { color: var(--ink-faint); }
+
+  .quadrant-label {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 100px;
+    color: #fff; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,.35);
+    border: 2px solid rgba(255,255,255,.8);
+  }
+  .caveat {
+    font-size: 12px; color: var(--accent-ink); background: var(--accent-soft);
+    border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; line-height: 1.5;
+  }
+  .popup-flagged { font-size: 12.5px; line-height: 1.5; }
+  .popup-flagged button.btn { margin-top: 6px; width: 100%; font-size: 12px; padding: 6px 8px; }
+</style>
 </head>
 <body>
 <div id="app">
   <header>
     <div class="title">
-      <h1>Building Footprint & Zoning Tool</h1>
-      <span class="sub">Municipal Zoning, Section Boundaries & Manual Measurement Workflows</span>
+      <h1>Building Footprint Tool</h1>
+      <span class="sub">Trace a rooftop on satellite imagery &rarr; get the square footage</span>
     </div>
   </header>
 
@@ -117,409 +144,420 @@
     <div id="map"></div>
 
     <div id="sidebar">
-      <!-- Search Panel -->
       <div class="panel">
-        <h2>Find Building / Address</h2>
-        <label class="field-label" for="address-input">Search Address</label>
+        <h2>Find a building</h2>
+        <label class="field-label" for="address-input">Address</label>
         <input type="text" id="address-input" placeholder="e.g. 1855 Denver W Ct, Lakewood, CO">
         <div class="row">
-          <button class="btn primary" id="search-btn">Go</button>
-          <button class="btn" id="map-style-btn">Style: Light Map</button>
+          <button class="btn primary" id="search-btn">Go to address</button>
+          <button class="btn" id="labels-btn">Labels: on</button>
+        </div>
+        <div class="hint">Click points around the roofline to trace it. Double-click, or use <strong>Finish shape</strong>, to close it. Drag any point to adjust before saving.</div>
+      </div>
+
+      <div class="panel">
+        <h2>Section boundaries</h2>
+        <div id="boundary-status">Shows the S Kipling Pkwy / Kipling St and 6th Ave lines from Kasha's assignment, so you can see where each person's section ends and meets.</div>
+        <button class="btn primary" id="boundary-btn" style="width:100%;">Show section boundaries</button>
+        <div class="legend-swatches">
+          <div class="legend-row"><span class="legend-dot" style="background:#E8C33D;"></span>Yellow <span class="who">&mdash; you (Mabell)</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#8B5E3C;"></span>Brown <span class="who">&mdash; Ken</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#3355CC;"></span>Blue <span class="who">&mdash; Myles</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#2E9E4E;"></span>Green <span class="who">&mdash; Kylie</span></div>
         </div>
       </div>
 
-      <!-- Manual Measurement Tools -->
       <div class="panel">
-        <h2>Manual Measurement</h2>
-        <div class="caveat">Use map drawing tools or click any address dot/polygon to derive area (GFA) & boundaries automatically.</div>
-        <div class="row">
-          <button class="btn" id="measure-poly-btn">Measure Polygon Area</button>
-          <button class="btn danger" id="clear-drawings-btn">Clear Manual Measurements</button>
-        </div>
-      </div>
-
-      <!-- Python Assessor Scraper Automation Panel -->
-      <div class="panel">
-        <h2>JeffCo Python Automation</h2>
-        <div class="caveat">Executes Python code directly in browser to fetch property records.</div>
-        <button class="btn primary" id="py-run-btn" style="width:100%;">Run Python JeffCo Assessor Lookup</button>
-        <div id="py-status" style="font-size:11px; margin-top:6px; color:var(--ink-soft);">Python Status: Idle</div>
-      </div>
-
-      <!-- Local GeoJSON Footprints & Layers -->
-      <div class="panel">
-        <h2>Layers & Footprints</h2>
-        <button class="btn primary" id="load-geojson-btn" style="width:100%;">Reload Local Layers & GeoJSON</button>
-        <div id="scan-status">Ready to load `buildings.geojson`.</div>
-      </div>
-
-      <!-- Flag Threshold -->
-      <div class="panel">
-        <h2>Flag Threshold</h2>
-        <label class="field-label" for="threshold-input">Minimum GFA (sq ft) to flag</label>
+        <h2>Flag threshold</h2>
+        <label class="field-label" for="threshold-input">Minimum sq ft to flag</label>
         <input type="number" id="threshold-input" value="10000" step="500" min="0">
       </div>
 
-      <!-- 30-Field Data Panel -->
       <div class="panel">
-        <h2>Selected Record (30 Fields)</h2>
-        <div class="field-grid">
-          <div><label class="field-label">Parcel Number</label><input type="text" id="f_Parcel_Number"></div>
-          <div><label class="field-label">Building Count</label><input type="number" id="f_Building_Count" value="1"></div>
-          <div><label class="field-label">Occupancy</label><input type="text" id="f_Occupancy" value="100%"></div>
-          <div><label class="field-label">Year Built</label><input type="text" id="f_Year_Built"></div>
-          <div><label class="field-label">Reporting Start</label><input type="text" id="f_Reporting_Start_Date" value="2026-01-01"></div>
-          <div><label class="field-label">Primary Use Type</label><input type="text" id="f_Primary_Use_Type" value="Commercial"></div>
-          <div><label class="field-label">Municipal Zoning</label><input type="text" id="f_Government_Type" value="Municipal / Zone-1"></div>
-          <div><label class="field-label">Assessor / Measured GFA</label><input type="text" id="f_Assessor_GFA"></div>
-          
-          <div class="full-width"><label class="field-label">Building Address Source</label><input type="text" id="f_Building_Address_Source" value="County Assessor / GIS"></div>
-          <div class="full-width"><label class="field-label">Section Boundary / Name</label><input type="text" id="f_Building_Address_Name"></div>
-          <div class="full-width"><label class="field-label">Building Street</label><input type="text" id="f_Building_Street"></div>
-          
-          <div><label class="field-label">Suite/Apt</label><input type="text" id="f_Building_Suite_Apt"></div>
-          <div><label class="field-label">City</label><input type="text" id="f_Building_City" value="Lakewood"></div>
-          <div><label class="field-label">County</label><input type="text" id="f_Building_County" value="Jefferson"></div>
-          <div><label class="field-label">Country</label><input type="text" id="f_Building_Country" value="US"></div>
-          <div><label class="field-label">State</label><input type="text" id="f_Building_State" value="CO"></div>
-          <div><label class="field-label">Postal Code</label><input type="text" id="f_Building_Postal_Code"></div>
-          
-          <div><label class="field-label">Is Primary</label><input type="text" id="f_Building_Is_Primary" value="True"></div>
-          <div><label class="field-label">Do Not Mail</label><input type="text" id="f_Building_Do_Not_Mail" value="False"></div>
-          
-          <div class="full-width"><label class="field-label">Owner Contact Type</label><input type="text" id="f_Owner_Contact_Type" value="Property Owner"></div>
-          <div class="full-width"><label class="field-label">Owner Address Source</label><input type="text" id="f_Owner_Address_Source" value="Tax Records"></div>
-          <div class="full-width"><label class="field-label">Owner Name</label><input type="text" id="f_Owner_Name"></div>
-          <div class="full-width"><label class="field-label">Owner In Care Of</label><input type="text" id="f_Owner_In_Care_Of"></div>
-          <div class="full-width"><label class="field-label">Owner Street</label><input type="text" id="f_Owner_Street"></div>
-          
-          <div><label class="field-label">Owner Suite/Apt</label><input type="text" id="f_Owner_Suite_Apt"></div>
-          <div><label class="field-label">Owner City</label><input type="text" id="f_Owner_City"></div>
-          <div><label class="field-label">Owner County</label><input type="text" id="f_Owner_County"></div>
-          <div><label class="field-label">Owner Country</label><input type="text" id="f_Owner_Country" value="US"></div>
-          <div><label class="field-label">Owner State</label><input type="text" id="f_Owner_State_Province"></div>
-          <div><label class="field-label">Owner Postal Code</label><input type="text" id="f_Owner_Postal_Code"></div>
-        </div>
-        <button class="btn primary" id="save-fields-btn" style="width:100%; margin-top:8px;">Save Active Record</button>
+        <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(Jeffco Assessor data)</span></h2>
+        <div class="caveat">Queries Jefferson County's live parcel/assessor feed for the actual recorded building size (not a guess from imagery) and flags anything at or above your threshold. It still can't know which already have a dot on the sandbox map &mdash; check each flagged one there before logging it as missing. Several parcels at one address usually means a condo/HOA complex &mdash; follow the condo protocol for those instead of logging them individually.</div>
+        <button class="btn primary" id="scan-btn" style="width:100%;">Scan current view for buildings</button>
+        <div id="scan-status" style="margin-top:8px;"></div>
       </div>
 
-      <!-- Log Table -->
+      <div class="panel" id="drawing-panel">
+        <h2>Tracing</h2>
+        <div id="draw-status">Click on the map to start tracing a rooftop.</div>
+        <div class="row">
+          <button class="btn" id="undo-point-btn" disabled>Undo point</button>
+          <button class="btn primary" id="finish-shape-btn" disabled>Finish shape</button>
+        </div>
+      </div>
+
+      <div class="panel" id="trace-panel">
+        <h2>Current trace</h2>
+        <div class="area-sub" style="margin-bottom:2px;">Traced footprint</div>
+        <div class="area-readout" style="font-size:20px;"><span id="area-value">0</span> <span class="unit">sq ft</span> <span class="unit">(<span id="area-sqm">0</span> m&sup2;)</span></div>
+
+        <label class="field-label" for="floors-input">Floors (&times; footprint = estimated total GFA)</label>
+        <div class="row" style="align-items:center;">
+          <input type="number" id="floors-input" value="1" min="1" step="1" style="margin-bottom:0;">
+          <button class="btn" id="lookup-floors-btn" style="flex:1.4;">Pull floors from Jeffco</button>
+        </div>
+        <div id="floors-status" class="area-sub" style="margin-top:-4px;">Looking up floors…</div>
+
+        <div class="area-readout"><span id="gfa-value">0</span> <span class="unit">sq ft estimated GFA</span></div>
+        <div id="assessor-check" class="area-sub" style="display:none;"></div>
+        <div id="flag-badge" class="flag-badge no">below threshold</div>
+
+        <label class="field-label" for="label-input">Address / label</label>
+        <input type="text" id="label-input" placeholder="matches the search above by default">
+        <label class="field-label" for="note-input">Note</label>
+        <input type="text" id="note-input" placeholder="e.g. appears to be one building, 2 stories">
+        <div class="row">
+          <button class="btn primary" id="save-trace-btn">Save to list</button>
+          <button class="btn danger" id="discard-trace-btn">Discard</button>
+        </div>
+      </div>
+
       <div class="panel" style="flex:1; border-bottom:none;">
-        <h2>Measured Buildings Log</h2>
-        <div id="log-empty">No buildings saved yet.</div>
+        <h2>Measured buildings</h2>
+        <div id="log-empty">Nothing saved yet &mdash; trace a rooftop to get started.</div>
         <table id="log-table" style="display:none;">
-          <thead><tr><th>Street / Parcel</th><th style="text-align:right;">GFA (sq ft)</th><th></th></tr></thead>
+          <thead><tr><th>Label</th><th style="text-align:right;">Sq ft</th><th></th></tr></thead>
           <tbody id="log-body"></tbody>
         </table>
       </div>
 
       <div id="export-row">
-        <button class="btn" id="export-btn" style="width:100%;">Export Full 30-Field CSV</button>
+        <button class="btn" id="export-btn" style="width:100%;">Export list as CSV</button>
       </div>
     </div>
   </div>
 </div>
 
-<!-- Embedded Python Logic via PyScript -->
-<script type="py">
-import pandas as pd
-import requests
-from js import document, alert
-from pyodide.ffi import create_proxy
-
-addresses = [
-    "2900 S ESTES ST",
-    "12201 MORRISON RD",
-    "5290 W ARIZONA AVE",
-    "3604 S KIPLING PKWY",
-    "6565 W JEWELL AVE",
-    "8507 W HAMPDEN AVE"
-]
-
-def search_jeffco_property(address):
-    url = "https://propertysearch.jeffco.us/propertyRecordsSearch/Address"
-    payload = {"address": address}
-    headers = {"User-Agent": "Mozilla/5.0"}
-    try:
-        response = requests.post(url, data=payload, headers=headers, timeout=10)
-        if response.status_code == 200:
-            return response.json()
-    except Exception as e:
-        print(f"Error fetching {address}: {e}")
-    return None
-
-def run_python_lookup(event):
-    status_el = document.getElementById("py-status")
-    status_el.textContent = "Processing JeffCo records via Python..."
-    
-    results = []
-    for addr in addresses:
-        data = search_jeffco_property(addr)
-        results.append({"Address": addr, "AssessorData": data})
-
-    df = pd.DataFrame(results)
-    df.to_csv("JeffCo_Property_Records.csv", index=False)
-    status_el.textContent = f"Processed {len(df)} records! Export ready."
-    alert("Python Assessor Lookup Completed!")
-
-# Bind python function to the UI button
-btn = document.getElementById("py-run-btn")
-if btn:
-    btn.addEventListener("click", create_proxy(run_python_lookup))
-</script>
-
-<!-- Leaflet JavaScript dependencies & Main Mapper Logic -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script>
 (function () {
-  var LOG_KEY = 'lakewood-30field-log-v3';
-  var FIELDS = [
-    'Parcel_Number', 'Building_Count', 'Occupancy', 'Year_Built', 'Reporting_Start_Date',
-    'Primary_Use_Type', 'Government_Type', 'Assessor_GFA', 'Building_Address_Source',
-    'Building_Address_Name', 'Building_Street', 'Building_Suite_Apt', 'Building_City',
-    'Building_County', 'Building_Country', 'Building_State', 'Building_Postal_Code',
-    'Building_Is_Primary', 'Building_Do_Not_Mail', 'Owner_Contact_Type', 'Owner_Address_Source',
-    'Owner_Name', 'Owner_In_Care_Of', 'Owner_Street', 'Owner_Suite_Apt', 'Owner_City',
-    'Owner_County', 'Owner_Country', 'Owner_State_Province', 'Owner_Postal_Code'
-  ];
+  var LOG_KEY = 'lakewood-footprint-tool-log-v2';
+  var EARTH_R = 6378137.0;
 
-  var map, lightLayer, satelliteLayer, currentBasemap = 'light';
-  var scanGroup = null, overlayGroup = null, drawnItems = null, savedEntries = [];
-  var rawGeojsonData = null;
+  var map, imageryLayer, labelsLayer, labelsOn = true;
+  var currentPath = [];       // array of L.LatLng, the trace in progress
+  var currentMarkers = [];    // draggable vertex markers for the in-progress trace
+  var currentShape = null;    // L.Polyline or L.Polygon for the in-progress trace
+  var pendingFinished = false; // true once the shape is closed, waiting on save/discard
+  var savedEntries = [];
+  var lastSearchedLabel = '';
+  var boundaryGroup = null;
+  var boundariesShown = false;
+  var boundariesLoaded = false;
+  var scanGroup = null;
+  var BOUNDARY_KEY = 'lakewood-footprint-tool-boundaries-v1';
+  var lastFootprintSqft = 0;
+  var currentAssessorMatch = null; // Jeffco attributes matched to the current trace, if any
+  var lookupToken = 0; // guards against a stale async lookup overwriting a newer trace
 
-  var addressPoints = [
-    { lat: 39.7155, lng: -105.1090, addr: "1855 Denver W Ct", pin: "49-123-001", zoning: "C-1 Commercial", section: "Section 12", gfa: 12500 },
-    { lat: 39.7180, lng: -105.1000, addr: "1900 W Alameda Ave", pin: "49-123-002", zoning: "M-G General Municipal", section: "Section 12", gfa: 8400 },
-    { lat: 39.7120, lng: -105.1100, addr: "1200 S Union Blvd", pin: "49-123-003", zoning: "R-3 Residential", section: "Section 14", gfa: 15200 },
-    { lat: 39.7190, lng: -105.1150, addr: "2050 S Union Blvd", pin: "49-123-004", zoning: "C-2 Highway Commercial", section: "Section 14", gfa: 22000 },
-    { lat: 39.7080, lng: -105.1080, addr: "1405 Kipling St", pin: "49-123-005", zoning: "M-G General Municipal", section: "Section 15", gfa: 9100 }
-  ];
+  // ---------- Geodesic area (same formula used by Leaflet.draw / GeometryUtil) ----------
+  function geodesicAreaSqm(latlngs) {
+    var n = latlngs.length;
+    if (n < 3) return 0;
+    var d2r = Math.PI / 180, area = 0;
+    for (var i = 0; i < n; i++) {
+      var p1 = latlngs[i], p2 = latlngs[(i + 1) % n];
+      area += ((p2.lng - p1.lng) * d2r) * (2 + Math.sin(p1.lat * d2r) + Math.sin(p2.lat * d2r));
+    }
+    return Math.abs(area * EARTH_R * EARTH_R / 2.0);
+  }
 
+  // ---------- Map setup ----------
   function initMap() {
-    map = L.map('map', { doubleClickZoom: false, maxZoom: 21 }).setView([39.715, -105.109], 13);
+    map = L.map('map', { doubleClickZoom: false, maxZoom: 21 }).setView([39.6987, -105.0770], 13);
 
-    lightLayer = L.tileLayer(
-      'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
-      { maxZoom: 21, attribution: '&copy; OpenStreetMap' }
+    imageryLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 21, maxNativeZoom: 19, attribution: 'Imagery &copy; Esri, Maxar, Earthstar Geographics' }
     ).addTo(map);
 
-    satelliteLayer = L.tileLayer(
-      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-      { maxZoom: 21, attribution: 'Imagery &copy; Esri' }
-    );
+    labelsLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+      { maxZoom: 21, maxNativeZoom: 19, opacity: 0.9 }
+    ).addTo(map);
 
+    map.on('click', onMapClick);
+    map.on('dblclick', function () { finishShape(); });
+
+    boundaryGroup = L.layerGroup();
     scanGroup = L.layerGroup().addTo(map);
-    overlayGroup = L.layerGroup().addTo(map);
-    drawnItems = new L.FeatureGroup().addTo(map);
 
-    var drawControl = new L.Control.Draw({
-      draw: {
-        polyline: false, circle: false, circlemarker: false, marker: false,
-        polygon: { allowIntersection: false, showArea: true },
-        rectangle: { showArea: true }
-      },
-      edit: { featureGroup: drawnItems }
-    });
-    map.addControl(drawControl);
-
-    map.on(L.Draw.Event.CREATED, function (e) {
-      var layer = e.layer;
-      drawnItems.addLayer(layer);
-      var latLngs = layer.getLatLngs()[0];
-      var areaSqMeters = L.GeometryUtil.geodesicArea(latLngs);
-      var areaSqFt = Math.round(areaSqMeters * 10.7639);
-
-      document.getElementById('f_Assessor_GFA').value = areaSqFt;
-      document.getElementById('f_Building_Street').value = "Manual Measurement Polygon";
-      document.getElementById('f_Building_Address_Source').value = "Manual Draw Calculation";
-      document.getElementById('f_Government_Type').value = "Custom Section Draw";
-      alert("Measured Area: " + areaSqFt.toLocaleString() + " sq ft. Fields updated!");
-    });
-
-    document.getElementById('load-geojson-btn').addEventListener('click', loadLocalGeoJSON);
-    document.getElementById('map-style-btn').addEventListener('click', toggleMapStyle);
-    document.getElementById('search-btn').addEventListener('click', doSearch);
-    document.getElementById('save-fields-btn').addEventListener('click', saveActiveFields);
-    document.getElementById('export-btn').addEventListener('click', exportCSV);
-    document.getElementById('clear-drawings-btn').addEventListener('click', function() {
-      drawnItems.clearLayers();
-    });
-    document.getElementById('measure-poly-btn').addEventListener('click', function() {
-      new L.Draw.Polygon(map).enable();
-    });
-
-    renderCustomLayers();
     loadLog();
     renderLog();
-    loadLocalGeoJSON();
-
-    setTimeout(function() { map.invalidateSize(); }, 300);
   }
 
-  function renderCustomLayers() {
-    overlayGroup.clearLayers();
+  function onMapClick(e) {
+    if (pendingFinished) return; // a shape is already done, waiting on save/discard
+    addVertex(e.latlng);
+  }
 
-    var sectionBounds = [[39.7010, -105.1270], [39.7040, -105.1255]];
-    var boundaryPoly = L.rectangle(sectionBounds, {
-      color: '#D4AF37', fillColor: '#FFE700', fillOpacity: 0.65, weight: 2
-    }).addTo(overlayGroup);
-    boundaryPoly.bindPopup("<strong>Section Boundary:</strong> Sector 4B<br><strong>Zoning:</strong> M-G Municipal");
-
-    addressPoints.forEach(function(pt) {
-      var marker = L.circleMarker([pt.lat, pt.lng], {
-        radius: 6, fillColor: '#A23A2C', color: '#6E1D13', weight: 1.5, fillOpacity: 0.95
-      }).addTo(overlayGroup);
-
-      marker.bindPopup("<strong>" + pt.addr + "</strong><br>Parcel: " + pt.pin + "<br>Zoning: " + pt.zoning + "<br>GFA: " + pt.gfa.toLocaleString() + " sq ft");
-      
-      marker.on('click', function(e) {
-        L.DomEvent.stopPropagation(e);
-        populateFields({
-          Parcel_Number: pt.pin,
-          Building_Count: 1,
-          Occupancy: '100%',
-          Reporting_Start_Date: '2026-01-01',
-          Primary_Use_Type: 'Commercial',
-          Government_Type: pt.zoning,
-          Assessor_GFA: pt.gfa,
-          Building_Address_Source: 'Address Dot Layer',
-          Building_Address_Name: pt.section,
-          Building_Street: pt.addr,
-          Building_City: 'Lakewood',
-          Building_County: 'Jefferson',
-          Building_Country: 'US',
-          Building_State: 'CO',
-          Building_Is_Primary: 'True',
-          Building_Do_Not_Mail: 'False'
-        });
-        document.getElementById('address-input').value = pt.addr;
-      });
+  function addVertex(latlng) {
+    currentPath.push(latlng);
+    var marker = L.marker(latlng, {
+      draggable: true,
+      icon: L.divIcon({ className: 'vertex-icon', iconSize: [12, 12] })
+    }).addTo(map);
+    var idx = currentMarkers.length;
+    marker.on('drag', function () {
+      currentPath[idx] = marker.getLatLng();
+      redrawShape();
+      updateLiveArea();
     });
+    currentMarkers.push(marker);
+    redrawShape();
+    updateLiveArea();
+    updateDrawStatus();
   }
 
-  function toggleMapStyle() {
-    var btn = document.getElementById('map-style-btn');
-    if (currentBasemap === 'light') {
-      map.removeLayer(lightLayer); satelliteLayer.addTo(map); currentBasemap = 'satellite'; btn.textContent = 'Style: Satellite';
+  function redrawShape() {
+    if (currentShape) { map.removeLayer(currentShape); currentShape = null; }
+    if (currentPath.length === 0) return;
+    var style = { color: '#3D6B62', weight: 2, fillColor: '#3D6B62', fillOpacity: 0.18 };
+    if (currentPath.length < 3) {
+      currentShape = L.polyline(currentPath, style).addTo(map);
     } else {
-      map.removeLayer(satelliteLayer); lightLayer.addTo(map); currentBasemap = 'light'; btn.textContent = 'Style: Light Map';
+      currentShape = L.polygon(currentPath, style).addTo(map);
     }
   }
 
-  function populateFields(data) {
-    FIELDS.forEach(function(f) {
-      var el = document.getElementById('f_' + f);
-      if (el) el.value = data[f] !== undefined ? data[f] : '';
-    });
+  function updateDrawStatus() {
+    var n = currentPath.length;
+    var status = document.getElementById('draw-status');
+    var undoBtn = document.getElementById('undo-point-btn');
+    var finishBtn = document.getElementById('finish-shape-btn');
+    undoBtn.disabled = n === 0;
+    finishBtn.disabled = n < 3;
+    if (n === 0) status.textContent = 'Click on the map to start tracing a rooftop.';
+    else if (n < 3) status.textContent = n + ' point(s) placed — add at least ' + (3 - n) + ' more.';
+    else status.textContent = n + ' points placed. Keep going, or click Finish shape / double-click the map.';
   }
 
-  function getFieldsFromUI() {
-    var data = {};
-    FIELDS.forEach(function(f) {
-      var el = document.getElementById('f_' + f);
-      data[f] = el ? el.value : '';
-    });
-    return data;
+  function updateLiveArea() {
+    if (currentPath.length < 3) return;
+    var sqm = geodesicAreaSqm(currentPath);
+    reflectArea(sqm);
   }
 
-  function parseFeatureTo30Fields(props) {
-    props = props || {};
-    return {
-      Parcel_Number: props.PIN || props.PARCEL || props.PARCEL_NO || '',
-      Building_Count: 1, Occupancy: '100%',
-      Year_Built: props.YEARBUILT || props.YR_BUILT || '',
-      Reporting_Start_Date: '2026-01-01',
-      Primary_Use_Type: props.USE_TYPE || props.CLASS || 'Commercial',
-      Government_Type: props.ZONING || props.MUNICIPAL_ZONE || 'Municipal / Zone-1',
-      Assessor_GFA: props.STTGRSAREA || props.GFA || props.SQFT || '',
-      Building_Address_Source: 'County Assessor / GIS',
-      Building_Address_Name: props.SECTION || props.SECTION_NUM || 'Section Boundary A',
-      Building_Street: (props.PRPADDRESS || props.ADDRESS || '').trim(),
-      Building_Suite_Apt: '',
-      Building_City: props.CITY || 'Lakewood', Building_County: 'Jefferson', Building_Country: 'US', Building_State: 'CO',
-      Building_Postal_Code: props.ZIP || props.POSTAL || '',
-      Building_Is_Primary: 'True', Building_Do_Not_Mail: 'False',
-      Owner_Contact_Type: 'Property Owner', Owner_Address_Source: 'Tax Records',
-      Owner_Name: props.OWNER || props.OWNER_NAME || '', Owner_In_Care_Of: '',
-      Owner_Street: props.OWNER_STRT || props.OWNER_ADDR || '', Owner_Suite_Apt: '',
-      Owner_City: props.OWNER_CITY || 'Lakewood', Owner_County: 'Jefferson', Owner_Country: 'US',
-      Owner_State_Province: props.OWNER_ST || 'CO', Owner_Postal_Code: props.OWNER_ZIP || ''
-    };
+  // Footprint readout only — does not touch floors or the flag badge.
+  function reflectArea(sqm) {
+    var sqft = sqm * 10.76391;
+    lastFootprintSqft = sqft;
+    document.getElementById('area-value').textContent = Math.round(sqft).toLocaleString();
+    document.getElementById('area-sqm').textContent = Math.round(sqm).toLocaleString();
+    updateGfaAndFlag();
+    return sqft;
   }
 
-  function renderGeoJsonLayers() {
-    if (!rawGeojsonData) return;
-    scanGroup.clearLayers();
+  // Footprint x floors = estimated GFA, and the flag badge is judged against that.
+  function updateGfaAndFlag() {
+    var floors = Math.max(1, parseFloat(document.getElementById('floors-input').value) || 1);
+    var gfa = lastFootprintSqft * floors;
     var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
-    var count = 0;
-
-    try {
-      L.geoJSON(rawGeojsonData, {
-        style: function(feature) {
-          var sqft = feature.properties ? (feature.properties.STTGRSAREA || 0) : 0;
-          var flagged = sqft >= threshold;
-          return {
-            color: flagged ? '#A23A2C' : '#3D6B62',
-            fillColor: flagged ? '#A23A2C' : '#3D6B62',
-            weight: flagged ? 2 : 1, fillOpacity: flagged ? 0.4 : 0.2
-          };
-        },
-        onEachFeature: function(feature, layer) {
-          count++;
-          layer.on('click', function(e) {
-            L.DomEvent.stopPropagation(e);
-            var parsedData = parseFeatureTo30Fields(feature.properties);
-            populateFields(parsedData);
-            document.getElementById('address-input').value = parsedData.Building_Street;
-          });
-        }
-      }).addTo(scanGroup);
-
-      document.getElementById('scan-status').textContent = 'Loaded ' + count.toLocaleString() + ' footprints & boundaries!';
-    } catch(err) {
-      document.getElementById('scan-status').textContent = 'Error parsing dataset: ' + err.message;
+    document.getElementById('gfa-value').textContent = Math.round(gfa).toLocaleString();
+    var badge = document.getElementById('flag-badge');
+    if (gfa >= threshold) {
+      badge.className = 'flag-badge yes';
+      badge.textContent = '✓ at or above ' + threshold.toLocaleString() + ' sq ft';
+    } else {
+      badge.className = 'flag-badge no';
+      badge.textContent = 'below ' + threshold.toLocaleString() + ' sq ft threshold';
     }
+    return gfa;
   }
 
-  function loadLocalGeoJSON() {
-    var statusEl = document.getElementById('scan-status');
-    statusEl.textContent = 'Loading local buildings.geojson file...';
+  // ---------- Auto-pull floor count from Jeffco's live parcel/assessor feed ----------
+  var JEFFCO_LOOKUP_FIELDS = 'PIN,PARCELID,PRPADDRESS,OWNNAM,STTYRBLT,STTTYPUSE,STTGRSAREA,STTNBRFLR';
 
-    fetch('buildings.geojson?v=' + new Date().getTime())
-      .then(function(r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status + ' - ensure buildings.geojson is in root');
-        return r.text();
-      })
-      .then(function(text) {
-        if (text.startsWith('version https://git-lfs')) {
-          throw new Error('File is stored in Git LFS pointer format.');
-        }
-        rawGeojsonData = JSON.parse(text);
-        renderGeoJsonLayers();
-      })
-      .catch(function(err) {
-        statusEl.textContent = 'Error loading local dataset: ' + err.message;
+  function centroidOf(latlngs) {
+    var sumLat = 0, sumLng = 0;
+    latlngs.forEach(function (p) { sumLat += p.lat; sumLng += p.lng; });
+    return { lat: sumLat / latlngs.length, lng: sumLng / latlngs.length };
+  }
+
+  function jeffcoLookupAtPoint(lat, lng) {
+    var params = new URLSearchParams({
+      where: '1=1',
+      geometry: lng + ',' + lat,
+      geometryType: 'esriGeometryPoint',
+      inSR: '4326',
+      spatialRel: 'esriSpatialRelIntersects',
+      outFields: JEFFCO_LOOKUP_FIELDS,
+      returnGeometry: 'false',
+      resultRecordCount: '1',
+      f: 'json'
+    });
+    return fetch(JEFFCO_PARCEL_URL + '?' + params.toString())
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.features && data.features.length) return data.features[0].attributes;
+        return null;
       });
   }
 
-  function saveActiveFields() {
-    var record = getFieldsFromUI();
-    if (!record.Building_Street && !record.Parcel_Number) {
-      alert('Please select a building or enter a Street/Parcel number.');
-      return;
+  function runFloorLookup() {
+    if (currentPath.length < 3) return;
+    var statusEl = document.getElementById('floors-status');
+    var checkEl = document.getElementById('assessor-check');
+    var myToken = ++lookupToken;
+    statusEl.style.display = '';
+    statusEl.textContent = 'Looking up floors from Jeffco…';
+    checkEl.style.display = 'none';
+    var c = centroidOf(currentPath);
+    jeffcoLookupAtPoint(c.lat, c.lng)
+      .then(function (attrs) {
+        if (myToken !== lookupToken) return; // a newer trace superseded this lookup
+        currentAssessorMatch = attrs;
+        if (attrs && attrs.STTNBRFLR) {
+          document.getElementById('floors-input').value = attrs.STTNBRFLR;
+          statusEl.textContent = 'Auto-filled from PIN ' + (attrs.PIN || attrs.PARCELID || '—') +
+            (attrs.PRPADDRESS ? ' — ' + attrs.PRPADDRESS : '') + '. Override if this trace covers a different building.';
+          if (attrs.STTGRSAREA) {
+            checkEl.style.display = '';
+            checkEl.textContent = 'Assessor recorded gross area for this parcel: ' + Math.round(attrs.STTGRSAREA).toLocaleString() +
+              ' sq ft (' + (attrs.STTTYPUSE || 'unknown use') + ', built ' + (attrs.STTYRBLT || '—') + ') — compare against the estimate above.';
+          }
+        } else if (attrs) {
+          statusEl.textContent = 'Matched PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ', but no floor count on file — enter it manually if known.';
+        } else {
+          statusEl.textContent = 'No Jeffco parcel matched this location — enter floors manually if known.';
+        }
+        updateGfaAndFlag();
+      })
+      .catch(function () {
+        if (myToken !== lookupToken) return;
+        statusEl.textContent = 'Floor lookup failed (network issue) — enter floors manually if known.';
+      });
+  }
+
+  document.getElementById('lookup-floors-btn').addEventListener('click', runFloorLookup);
+  document.getElementById('floors-input').addEventListener('input', updateGfaAndFlag);
+
+  function finishShape() {
+    if (currentPath.length < 3 || pendingFinished) return;
+    pendingFinished = true;
+    document.getElementById('trace-panel').classList.add('active');
+    document.getElementById('label-input').value = lastSearchedLabel;
+    document.getElementById('note-input').value = '';
+    document.getElementById('floors-input').value = 1;
+    document.getElementById('assessor-check').style.display = 'none';
+    currentAssessorMatch = null;
+    updateLiveArea();
+    runFloorLookup();
+  }
+
+  document.getElementById('finish-shape-btn').addEventListener('click', finishShape);
+
+  document.getElementById('undo-point-btn').addEventListener('click', function () {
+    if (pendingFinished || !currentPath.length) return;
+    currentPath.pop();
+    var m = currentMarkers.pop();
+    if (m) map.removeLayer(m);
+    redrawShape();
+    updateDrawStatus();
+    if (currentPath.length >= 3) updateLiveArea();
+  });
+
+  document.getElementById('threshold-input').addEventListener('input', function () {
+    if (pendingFinished && currentPath.length >= 3) updateGfaAndFlag();
+  });
+
+  function clearCurrentTrace() {
+    currentMarkers.forEach(function (m) { map.removeLayer(m); });
+    if (currentShape) map.removeLayer(currentShape);
+    currentPath = []; currentMarkers = []; currentShape = null;
+    pendingFinished = false;
+    document.getElementById('trace-panel').classList.remove('active');
+    updateDrawStatus();
+  }
+
+  document.getElementById('discard-trace-btn').addEventListener('click', clearCurrentTrace);
+
+  // Shared by manual tracing (save) and the auto-detect quick-add.
+  // latlngs: array of {lat,lng} (or L.LatLng, which also exposes .lat/.lng).
+  // sqftOverride: use this as the logged sq ft instead of recomputing from the polygon shape
+  // (e.g. footprint x floors for a manual trace, or the assessor's own recorded GFA for a scan result).
+  function commitEntry(latlngs, label, note, sqftOverride) {
+    var sqft, sqm;
+    if (typeof sqftOverride === 'number' && sqftOverride > 0) {
+      sqft = sqftOverride;
+      sqm = sqft / 10.76391;
+    } else {
+      sqm = geodesicAreaSqm(latlngs);
+      sqft = sqm * 10.76391;
     }
-    savedEntries.push(record);
+    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
+    var flagged = sqft >= threshold;
+    var path = latlngs.map(function (p) { return { lat: p.lat, lng: p.lng }; });
+    var frozen = L.polygon(path.map(function (p) { return [p.lat, p.lng]; }), {
+      color: flagged ? '#4C7A4E' : '#8B8E7B',
+      fillColor: flagged ? '#4C7A4E' : '#8B8E7B',
+      weight: 2, fillOpacity: 0.18
+    }).addTo(map);
+    savedEntries.push({ label: label, note: note, sqft: sqft, sqm: sqm, flagged: flagged, path: path, layer: frozen });
     persistLog();
     renderLog();
+    return { sqft: sqft, flagged: flagged };
   }
 
+  document.getElementById('save-trace-btn').addEventListener('click', function () {
+    if (!pendingFinished) return;
+    if (currentShape) map.removeLayer(currentShape);
+
+    var floors = Math.max(1, parseFloat(document.getElementById('floors-input').value) || 1);
+    var footprintSqft = lastFootprintSqft;
+    var gfaSqft = footprintSqft * floors;
+
+    var noteText = document.getElementById('note-input').value.trim();
+    var autoNote = 'Footprint ' + Math.round(footprintSqft).toLocaleString() + ' sq ft × ' + floors +
+      ' floor(s) = ' + Math.round(gfaSqft).toLocaleString() + ' sq ft est. GFA';
+    if (currentAssessorMatch) {
+      autoNote += ' · Jeffco PIN ' + (currentAssessorMatch.PIN || currentAssessorMatch.PARCELID || '—') +
+        (currentAssessorMatch.STTGRSAREA ? ', recorded gross area ' + Math.round(currentAssessorMatch.STTGRSAREA).toLocaleString() + ' sq ft' : ', no recorded gross area on file');
+    }
+    var combinedNote = noteText ? (noteText + ' — ' + autoNote) : autoNote;
+
+    commitEntry(
+      currentPath,
+      document.getElementById('label-input').value.trim(),
+      combinedNote,
+      gfaSqft
+    );
+    currentMarkers.forEach(function (m) { map.removeLayer(m); });
+    currentPath = []; currentMarkers = []; currentShape = null; pendingFinished = false;
+    currentAssessorMatch = null;
+    document.getElementById('trace-panel').classList.remove('active');
+    updateDrawStatus();
+  });
+
+  // ---------- Persisted log ----------
   function loadLog() {
-    try { savedEntries = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); } catch (e) { savedEntries = []; }
+    var raw = [];
+    try { raw = JSON.parse(localStorage.getItem(LOG_KEY) || '[]'); } catch (e) { raw = []; }
+    savedEntries = raw.map(function (e) {
+      var layer = null;
+      if (e.path && e.path.length) {
+        layer = L.polygon(e.path, {
+          color: e.flagged ? '#4C7A4E' : '#8B8E7B',
+          fillColor: e.flagged ? '#4C7A4E' : '#8B8E7B',
+          weight: 2, fillOpacity: 0.18
+        }).addTo(map);
+      }
+      e.layer = layer;
+      return e;
+    });
   }
 
   function persistLog() {
-    try { localStorage.setItem(LOG_KEY, JSON.stringify(savedEntries)); } catch (e) {}
+    try {
+      var safe = JSON.stringify(savedEntries, function (key, value) {
+        if (key === 'layer') return undefined;
+        return value;
+      });
+      localStorage.setItem(LOG_KEY, safe);
+    } catch (e) {}
   }
 
   function renderLog() {
@@ -527,73 +565,308 @@ if btn:
     var table = document.getElementById('log-table');
     var empty = document.getElementById('log-empty');
     body.innerHTML = '';
-
     if (!savedEntries.length) {
-      table.style.display = 'none'; empty.style.display = 'block'; return;
+      table.style.display = 'none';
+      empty.style.display = 'block';
+      return;
     }
-
-    table.style.display = ''; empty.style.display = 'none';
-
+    table.style.display = '';
+    empty.style.display = 'none';
     savedEntries.forEach(function (entry, i) {
       var tr = document.createElement('tr');
+      if (entry.flagged) tr.className = 'flagged';
       var tdLabel = document.createElement('td');
-      tdLabel.textContent = entry.Building_Street || entry.Parcel_Number || '(unlabeled)';
-      
+      tdLabel.textContent = entry.label || '(unlabeled)';
+      if (entry.note) {
+        var small = document.createElement('div');
+        small.style.color = 'var(--ink-faint)'; small.style.fontSize = '11px';
+        small.textContent = entry.note;
+        tdLabel.appendChild(small);
+      }
       var tdArea = document.createElement('td');
       tdArea.className = 'num';
-      tdArea.textContent = entry.Assessor_GFA ? Math.round(parseFloat(entry.Assessor_GFA)).toLocaleString() : 'N/A';
-
+      tdArea.textContent = Math.round(entry.sqft).toLocaleString();
       var tdDel = document.createElement('td');
       var delBtn = document.createElement('button');
-      delBtn.className = 'del';
-      delBtn.textContent = 'remove';
+      delBtn.className = 'del'; delBtn.textContent = 'remove';
       delBtn.addEventListener('click', function () {
-        savedEntries.splice(i, 1); persistLog(); renderLog();
+        if (entry.layer) map.removeLayer(entry.layer);
+        savedEntries.splice(i, 1);
+        persistLog();
+        renderLog();
       });
-
       tdDel.appendChild(delBtn);
       tr.appendChild(tdLabel); tr.appendChild(tdArea); tr.appendChild(tdDel);
       body.appendChild(tr);
     });
   }
 
-  function exportCSV() {
-    if (!savedEntries.length) { alert('No saved entries to export.'); return; }
-    var rows = [FIELDS];
-    savedEntries.forEach(function (entry) {
-      var row = FIELDS.map(function (f) {
-        var v = entry[f] !== undefined ? entry[f] : '';
+  document.getElementById('export-btn').addEventListener('click', function () {
+    if (!savedEntries.length) { alert('Nothing saved yet.'); return; }
+    var rows = [['Label', 'Sq Ft', 'Sq M', 'Flagged (>= threshold)', 'Note']];
+    savedEntries.forEach(function (e) {
+      rows.push([e.label || '', Math.round(e.sqft), Math.round(e.sqm), e.flagged ? 'Yes' : 'No', e.note || '']);
+    });
+    var csv = rows.map(function (r) {
+      return r.map(function (v) {
         var s = String(v).replace(/"/g, '""');
         return /[",\n]/.test(s) ? '"' + s + '"' : s;
-      });
-      rows.push(row);
-    });
-
-    var csv = rows.map(function (r) { return r.join(','); }).join('\n');
+      }).join(',');
+    }).join('\n');
     var blob = new Blob([csv], { type: 'text/csv' });
     var url = URL.createObjectURL(blob);
     var a = document.createElement('a');
-    a.href = url; a.download = 'building_reporting_data_30fields.csv';
+    a.href = url; a.download = 'lakewood-measured-buildings.csv';
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }
+  });
 
+  // ---------- Address search (OpenStreetMap Nominatim, free, no key) ----------
   function doSearch() {
     var q = document.getElementById('address-input').value.trim();
     if (!q) return;
+    lastSearchedLabel = q;
     var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(q);
-    fetch(url)
+    fetch(url, { headers: { 'Accept': 'application/json' } })
       .then(function (r) { return r.json(); })
       .then(function (results) {
         if (results && results.length) {
-          map.setView([parseFloat(results[0].lat), parseFloat(results[0].lon)], 19);
+          var lat = parseFloat(results[0].lat), lon = parseFloat(results[0].lon);
+          map.setView([lat, lon], 20);
         } else {
-          alert('Address not found.');
+          alert('Could not find that address. Try adding the city/state, or pan and zoom manually.');
         }
+      })
+      .catch(function () {
+        alert('Address lookup failed (network issue). You can still pan and zoom to the building manually.');
       });
   }
 
-  window.onload = initMap;
+  document.getElementById('search-btn').addEventListener('click', doSearch);
+  document.getElementById('address-input').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') doSearch();
+  });
+
+  document.getElementById('labels-btn').addEventListener('click', function () {
+    labelsOn = !labelsOn;
+    if (labelsOn) labelsLayer.addTo(map); else map.removeLayer(labelsLayer);
+    this.textContent = labelsOn ? 'Labels: on' : 'Labels: off';
+  });
+
+  // ---------- Section boundaries (Kipling St/S Kipling Pkwy x 6th Ave) ----------
+  function nominatimGeojson(query) {
+    var url = 'https://nominatim.openstreetmap.org/search?format=geojson&polygon_geojson=1&limit=1&q=' + encodeURIComponent(query);
+    return fetch(url).then(function (r) { return r.json(); })
+      .then(function (fc) { return (fc && fc.features && fc.features.length) ? fc.features[0].geometry : null; })
+      .catch(function () { return null; });
+  }
+  function nominatimPoint(query) {
+    var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(query);
+    return fetch(url).then(function (r) { return r.json(); })
+      .then(function (res) { return (res && res.length) ? { lat: parseFloat(res[0].lat), lng: parseFloat(res[0].lon) } : null; })
+      .catch(function () { return null; });
+  }
+
+  var QUADRANTS = [
+    { dLat: 0.011, dLng: -0.014, color: '#2E9E4E', text: 'Green · Kylie' },
+    { dLat: 0.011, dLng: 0.014, color: '#3355CC', text: 'Blue · Myles' },
+    { dLat: -0.011, dLng: -0.014, color: '#E8C33D', text: 'Yellow · You' },
+    { dLat: -0.011, dLng: 0.014, color: '#8B5E3C', text: 'Brown · Ken' }
+  ];
+  var FALLBACK_INTERSECTION = { lat: 39.699, lng: -105.077 };
+
+  function drawBoundaries(data) {
+    boundaryGroup.clearLayers();
+    function addRoad(geom, label) {
+      if (!geom) return;
+      var layer = L.geoJSON(geom, { style: { color: '#1a1a1a', weight: 4, dashArray: '2 8', opacity: 0.85 } });
+      layer.bindTooltip(label, { sticky: true });
+      boundaryGroup.addLayer(layer);
+    }
+    addRoad(data.kiplingSouth, 'S Kipling Pkwy — section boundary');
+    addRoad(data.kiplingNorth, 'Kipling St — section boundary');
+    addRoad(data.sixthAve, '6th Ave — section boundary');
+
+    var pt = data.intersection || FALLBACK_INTERSECTION;
+    QUADRANTS.forEach(function (q) {
+      var marker = L.marker([pt.lat + q.dLat, pt.lng + q.dLng], {
+        icon: L.divIcon({
+          className: '',
+          html: '<div class="quadrant-label" style="background:' + q.color + ';">' + q.text + '</div>',
+          iconSize: null
+        }),
+        interactive: false
+      });
+      boundaryGroup.addLayer(marker);
+    });
+
+    var missing = [];
+    if (!data.kiplingSouth) missing.push('S Kipling Pkwy');
+    if (!data.kiplingNorth) missing.push('Kipling St');
+    if (!data.sixthAve) missing.push('6th Ave');
+    var statusEl = document.getElementById('boundary-status');
+    statusEl.textContent = missing.length
+      ? 'Loaded, but couldn\'t find exact road geometry for: ' + missing.join(', ') + '. Quadrant labels are still placed correctly.'
+      : 'Dashed lines mark the section dividers from Kasha\'s map; labels show whose section is which.';
+  }
+
+  function fetchBoundaries() {
+    document.getElementById('boundary-status').textContent = 'Looking up the boundary roads…';
+    return Promise.all([
+      nominatimGeojson('South Kipling Parkway, Lakewood, Colorado'),
+      nominatimGeojson('Kipling Street, Wheat Ridge, Colorado'),
+      nominatimGeojson('West 6th Avenue, Lakewood, Colorado'),
+      nominatimPoint('Kipling Street and 6th Avenue, Lakewood, Colorado')
+    ]).then(function (results) {
+      var data = {
+        kiplingSouth: results[0], kiplingNorth: results[1], sixthAve: results[2],
+        intersection: results[3] || FALLBACK_INTERSECTION
+      };
+      try { localStorage.setItem(BOUNDARY_KEY, JSON.stringify(data)); } catch (e) {}
+      boundariesLoaded = true;
+      drawBoundaries(data);
+    });
+  }
+
+  function tryLoadCachedBoundaries() {
+    try {
+      var cached = localStorage.getItem(BOUNDARY_KEY);
+      if (cached) { drawBoundaries(JSON.parse(cached)); boundariesLoaded = true; }
+    } catch (e) {}
+  }
+
+  document.getElementById('boundary-btn').addEventListener('click', function () {
+    var btn = this;
+    function reveal() {
+      boundaryGroup.addTo(map);
+      boundariesShown = true;
+      btn.textContent = 'Hide section boundaries';
+    }
+    if (boundariesShown) {
+      map.removeLayer(boundaryGroup);
+      boundariesShown = false;
+      btn.textContent = 'Show section boundaries';
+      return;
+    }
+    if (boundariesLoaded) { reveal(); return; }
+    btn.disabled = true; btn.textContent = 'Loading…';
+    fetchBoundaries().then(function () { btn.disabled = false; reveal(); })
+      .catch(function () {
+        btn.disabled = false; btn.textContent = 'Show section boundaries';
+        document.getElementById('boundary-status').textContent = 'Could not load boundary roads (network issue) — try again in a moment.';
+      });
+  });
+
+  // ---------- Auto-detect buildings via Jefferson County's live parcel/assessor feed ----------
+  // Source: Jeffco "Parcel" feature service (Assessor + BIT division), CC-BY 4.0.
+  var JEFFCO_PARCEL_URL = 'https://gisportal.jeffco.us/server2/rest/services/Parcel/FeatureServer/20/query';
+  var JEFFCO_FIELDS = 'PIN,PARCELID,PRPADDRESS,PRPSTRNUM,PRPSTRNAM,OWNNAM,STTYRBLT,STTTYPUSE,STTGRSAREA,STTNBRFLR';
+
+  function ringToLatLngs(ring) {
+    // ArcGIS rings are [x,y] = [lng,lat]; Leaflet wants [lat,lng].
+    return ring.map(function (pt) { return { lat: pt[1], lng: pt[0] }; });
+  }
+
+  function scanVisibleArea() {
+    var b = map.getBounds();
+    var south = b.getSouth(), west = b.getWest(), north = b.getNorth(), east = b.getEast();
+    var approxKm = Math.sqrt(Math.pow(north - south, 2) + Math.pow(east - west, 2)) * 111;
+    var statusEl = document.getElementById('scan-status');
+    if (approxKm > 4) {
+      statusEl.textContent = 'Zoom in a bit more first — this view is too wide for a quick scan (aim for a handful of blocks at a time).';
+      return;
+    }
+    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
+    statusEl.textContent = 'Querying Jefferson County parcel data…';
+    scanGroup.clearLayers();
+
+    var params = new URLSearchParams({
+      where: 'STTGRSAREA >= ' + threshold,
+      geometry: [west, south, east, north].join(','),
+      geometryType: 'esriGeometryEnvelope',
+      inSR: '4326',
+      spatialRel: 'esriSpatialRelIntersects',
+      outFields: JEFFCO_FIELDS,
+      returnGeometry: 'true',
+      outSR: '4326',
+      resultRecordCount: '500',
+      f: 'json'
+    });
+
+    fetch(JEFFCO_PARCEL_URL + '?' + params.toString())
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.error) throw new Error(data.error.message || 'Jeffco query error');
+        var features = (data && data.features) || [];
+        var addressCounts = {};
+        features.forEach(function (f) {
+          var addr = (f.attributes.PRPADDRESS || '').trim();
+          addressCounts[addr] = (addressCounts[addr] || 0) + 1;
+        });
+
+        features.forEach(function (f) {
+          var attrs = f.attributes;
+          if (!f.geometry || !f.geometry.rings || !f.geometry.rings.length) return;
+          var latlngs = ringToLatLngs(f.geometry.rings[0]);
+          var sqft = attrs.STTGRSAREA || 0;
+          var addr = (attrs.PRPADDRESS || '').trim();
+          var likelyCondo = addr && addressCounts[addr] > 1;
+
+          var poly = L.polygon(latlngs.map(function (p) { return [p.lat, p.lng]; }), {
+            color: '#A23A2C', fillColor: '#A23A2C', weight: 3, fillOpacity: 0.32, opacity: 0.95
+          }).addTo(scanGroup);
+
+          var floors = attrs.STTNBRFLR || null;
+          var perFloor = (floors && sqft) ? Math.round(sqft / floors) : null;
+
+          var popupDiv = document.createElement('div');
+          popupDiv.className = 'popup-flagged';
+          popupDiv.innerHTML =
+            '<strong>' + Math.round(sqft).toLocaleString() + ' sq ft</strong> (assessor gross area)<br>' +
+            (addr || '(no address on file)') + '<br>' +
+            'PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ' · Built ' + (attrs.STTYRBLT || '—') + '<br>' +
+            (attrs.STTTYPUSE || '') +
+            (floors ? ' · ' + floors + ' floor(s)' + (perFloor ? ' (≈' + perFloor.toLocaleString() + ' sq ft/floor)' : '') : '') + '<br>' +
+            'Owner: ' + (attrs.OWNNAM || '—') +
+            (likelyCondo ? '<br><strong style="color:var(--accent-ink);">' + addressCounts[addr] + ' parcels at this address — likely a condo/HOA. Use the condo protocol instead of logging this parcel directly.</strong>' : '') +
+            '<br><span style="color:var(--ink-faint);">Still check the sandbox map before treating this as missing.</span>';
+
+          if (!likelyCondo) {
+            var btn = document.createElement('button');
+            btn.className = 'btn primary';
+            btn.textContent = 'Add to my list';
+            btn.addEventListener('click', function () {
+              commitEntry(
+                latlngs,
+                addr || ('PIN ' + (attrs.PIN || attrs.PARCELID || '')),
+                'PIN ' + (attrs.PIN || attrs.PARCELID || '—') + ' · ' + (attrs.STTTYPUSE || 'Unknown use') +
+                ' · Built ' + (attrs.STTYRBLT || '—') + (floors ? ' · ' + floors + ' floor(s)' : '') +
+                ' · Owner: ' + (attrs.OWNNAM || '—') +
+                ' · Assessor recorded gross area (source: Jeffco parcel data)',
+                sqft
+              );
+              poly.closePopup();
+            });
+            popupDiv.appendChild(btn);
+          }
+          poly.bindPopup(popupDiv);
+        });
+
+        var note = data && data.exceededTransferLimit ? ' (more exist — zoom in for full coverage)' : '';
+        statusEl.textContent = features.length + ' parcel(s) at or above ' + threshold.toLocaleString() +
+          ' sq ft found in view' + note + '. Click a red outline for details, or Add to list.';
+      })
+      .catch(function (err) {
+        statusEl.textContent = 'Scan failed (' + (err && err.message ? err.message : 'network issue') +
+          ') — try again shortly, or trace this area manually below.';
+      });
+  }
+
+  document.getElementById('scan-btn').addEventListener('click', scanVisibleArea);
+
+  initMap();
+  tryLoadCachedBoundaries();
+  updateDrawStatus();
 })();
 </script>
 </body>
