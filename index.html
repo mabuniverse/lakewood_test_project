@@ -1,103 +1,115 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Building Footprint & Zoning Tool</title>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
-<style>
-  :root {
-    --bg: #F0EFE3;
-    --surface: #FBFAF3;
-    --ink: #22261C;
-    --ink-soft: #5B5F4F;
-    --ink-faint: #8B8E7B;
-    --line: #DAD8C4;
-    --accent: #A6741E;
-    --accent-ink: #6E4C14;
-    --accent-soft: #EFE1BE;
-    --teal: #3D6B62;
-    --teal-soft: #DCE9E4;
-    --good: #4C7A4E;
-    --good-soft: #DFEBDC;
-    --danger: #A23A2C;
-    --danger-soft: #F3DCD5;
-    font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #1B1D15; --surface: #23261C; --ink: #EBE9DC; --ink-soft: #B7B6A4; --ink-faint: #82836F;
-      --line: #3A3D2E; --accent: #D6A94E; --accent-ink: #F0D89C; --accent-soft: #3A3018;
-      --teal: #7FB0A4; --teal-soft: #223229; --good: #8FC08C; --good-soft: #223522;
-      --danger: #E08B78; --danger-soft: #3A241E;
-    }
-  }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
-  #app { display: flex; flex-direction: column; height: 100vh; }
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Building Footprint, Zoning & Measurement Tool</title>
+    
+    <!-- Leaflet & Drawing UI -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.css">
+    
+    <!-- PyScript CDN -->
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css" />
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
 
-  header {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--line);
-    flex: none;
-  }
-  header .title { display: flex; flex-direction: column; }
-  header h1 { font-size: 15px; margin: 0; font-weight: 700; }
-  header .sub { font-size: 12px; color: var(--ink-faint); }
+    <!-- Configure Python Dependencies (Pandas & Requests for PyScript) -->
+    <py-config>
+        packages = ["pandas", "requests"]
+    </py-config>
 
-  #layout { flex: 1; display: flex; min-height: 0; }
-  #map { flex: 1 1 auto; min-width: 0; background: #f8f9fa; cursor: crosshair; }
+    <style>
+      :root {
+        --bg: #F0EFE3;
+        --surface: #FBFAF3;
+        --ink: #22261C;
+        --ink-soft: #5B5F4F;
+        --ink-faint: #8B8E7B;
+        --line: #DAD8C4;
+        --accent: #A6741E;
+        --accent-ink: #6E4C14;
+        --accent-soft: #EFE1BE;
+        --teal: #3D6B62;
+        --teal-soft: #DCE9E4;
+        --good: #4C7A4E;
+        --good-soft: #DFEBDC;
+        --danger: #A23A2C;
+        --danger-soft: #F3DCD5;
+        font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1B1D15; --surface: #23261C; --ink: #EBE9DC; --ink-soft: #B7B6A4; --ink-faint: #82836F;
+          --line: #3A3D2E; --accent: #D6A94E; --accent-ink: #F0D89C; --accent-soft: #3A3018;
+          --teal: #7FB0A4; --teal-soft: #223229; --good: #8FC08C; --good-soft: #223522;
+          --danger: #E08B78; --danger-soft: #3A241E;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); }
+      #app { display: flex; flex-direction: column; height: 100vh; }
 
-  #sidebar {
-    width: 380px; flex: none; background: var(--surface); border-left: 1px solid var(--line);
-    display: flex; flex-direction: column; overflow-y: auto;
-  }
-  .panel { padding: 14px 16px; border-bottom: 1px solid var(--line); }
-  .panel h2 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); margin: 0 0 10px; }
+      header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--line);
+        flex: none;
+      }
+      header .title { display: flex; flex-direction: column; }
+      header h1 { font-size: 15px; margin: 0; font-weight: 700; }
+      header .sub { font-size: 12px; color: var(--ink-faint); }
 
-  label.field-label { display: block; font-size: 11px; font-weight: 600; color: var(--ink-soft); margin-bottom: 2px; text-transform: uppercase; }
-  input[type="text"], input[type="number"], select {
-    width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
-    background: var(--bg); color: var(--ink); font-size: 12px; margin-bottom: 8px;
-  }
-  input:focus, select:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
+      #layout { flex: 1; display: flex; min-height: 0; }
+      #map { flex: 1 1 auto; min-width: 0; background: #f8f9fa; cursor: crosshair; }
 
-  .row { display: flex; gap: 8px; }
-  .row > * { flex: 1; }
+      #sidebar {
+        width: 380px; flex: none; background: var(--surface); border-left: 1px solid var(--line);
+        display: flex; flex-direction: column; overflow-y: auto;
+      }
+      .panel { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+      .panel h2 { font-size: 12.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-faint); margin: 0 0 10px; }
 
-  button.btn {
-    padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
-    background: var(--bg); color: var(--ink); font-size: 12.5px; cursor: pointer; font-weight: 500;
-  }
-  button.btn:hover { border-color: var(--teal); }
-  button.btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
-  button.btn.primary:hover { opacity: .9; }
-  button.btn.danger { color: var(--danger); }
-  button.btn:disabled { opacity: .45; cursor: not-allowed; }
+      label.field-label { display: block; font-size: 11px; font-weight: 600; color: var(--ink-soft); margin-bottom: 2px; text-transform: uppercase; }
+      input[type="text"], input[type="number"], select {
+        width: 100%; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+        background: var(--bg); color: var(--ink); font-size: 12px; margin-bottom: 8px;
+      }
+      input:focus, select:focus { outline: 2px solid var(--teal); outline-offset: 1px; }
 
-  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 280px; overflow-y: auto; padding-right: 4px; border: 1px solid var(--line); padding: 8px; border-radius: 6px; background: var(--bg); }
-  .field-grid .full-width { grid-column: span 2; }
+      .row { display: flex; gap: 8px; }
+      .row > * { flex: 1; }
 
-  #scan-status { font-size: 12px; color: var(--ink-soft); margin-top: 6px; }
+      button.btn {
+        padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+        background: var(--bg); color: var(--ink); font-size: 12.5px; cursor: pointer; font-weight: 500;
+      }
+      button.btn:hover { border-color: var(--teal); }
+      button.btn.primary { background: var(--teal); color: #fff; border-color: var(--teal); }
+      button.btn.primary:hover { opacity: .9; }
+      button.btn.danger { color: var(--danger); }
+      button.btn:disabled { opacity: .45; cursor: not-allowed; }
 
-  table#log-table { width: 100%; border-collapse: collapse; font-size: 12px; }
-  table#log-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint); padding: 6px 4px; border-bottom: 1px solid var(--line); }
-  table#log-table td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  table#log-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  table#log-table tr.flagged td.num { color: var(--good); font-weight: 700; }
-  table#log-table button.del { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 11px; padding: 2px; }
-  #log-empty { font-size: 12px; color: var(--ink-faint); padding: 4px; }
+      .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; max-height: 280px; overflow-y: auto; padding-right: 4px; border: 1px solid var(--line); padding: 8px; border-radius: 6px; background: var(--bg); }
+      .field-grid .full-width { grid-column: span 2; }
 
-  #export-row { padding: 12px 16px; }
-  .caveat { font-size: 11.5px; color: var(--accent-ink); background: var(--accent-soft); border-radius: 6px; padding: 8px; margin-bottom: 10px; line-height: 1.4; }
-</style>
+      #scan-status { font-size: 12px; color: var(--ink-soft); margin-top: 6px; }
+
+      table#log-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      table#log-table th { text-align: left; font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint); padding: 6px 4px; border-bottom: 1px solid var(--line); }
+      table#log-table td { padding: 6px 4px; border-bottom: 1px solid var(--line); vertical-align: top; }
+      table#log-table td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      table#log-table button.del { background: none; border: none; color: var(--danger); cursor: pointer; font-size: 11px; padding: 2px; }
+      #log-empty { font-size: 12px; color: var(--ink-faint); padding: 4px; }
+
+      #export-row { padding: 12px 16px; }
+      .caveat { font-size: 11.5px; color: var(--accent-ink); background: var(--accent-soft); border-radius: 6px; padding: 8px; margin-bottom: 10px; line-height: 1.4; }
+    </style>
 </head>
 <body>
 <div id="app">
   <header>
     <div class="title">
       <h1>Building Footprint & Zoning Tool</h1>
-      <span class="sub">30-Field Automated Workflow & Map Integration</span>
+      <span class="sub">Municipal Zoning, Section Boundaries & Manual Measurement Workflows</span>
     </div>
   </header>
 
@@ -105,9 +117,9 @@
     <div id="map"></div>
 
     <div id="sidebar">
-      <!-- Address Search -->
+      <!-- Search Panel -->
       <div class="panel">
-        <h2>Find Building</h2>
+        <h2>Find Building / Address</h2>
         <label class="field-label" for="address-input">Search Address</label>
         <input type="text" id="address-input" placeholder="e.g. 1855 Denver W Ct, Lakewood, CO">
         <div class="row">
@@ -116,15 +128,32 @@
         </div>
       </div>
 
-      <!-- Local GeoJSON Footprints -->
+      <!-- Manual Measurement Tools -->
       <div class="panel">
-        <h2>Auto-Detect Buildings</h2>
-        <div class="caveat">Clicking any footprint automatically parses and fills all 30 target fields.</div>
-        <button class="btn primary" id="load-geojson-btn" style="width:100%;">Load Local Footprints</button>
+        <h2>Manual Measurement</h2>
+        <div class="caveat">Use map drawing tools or click any address dot/polygon to derive area (GFA) & boundaries automatically.</div>
+        <div class="row">
+          <button class="btn" id="measure-poly-btn">Measure Polygon Area</button>
+          <button class="btn danger" id="clear-drawings-btn">Clear Manual Measurements</button>
+        </div>
+      </div>
+
+      <!-- Python Assessor Scraper Automation Panel -->
+      <div class="panel">
+        <h2>JeffCo Python Automation</h2>
+        <div class="caveat">Executes Python code directly in browser to fetch property records.</div>
+        <button class="btn primary" id="py-run-btn" style="width:100%;">Run Python JeffCo Assessor Lookup</button>
+        <div id="py-status" style="font-size:11px; margin-top:6px; color:var(--ink-soft);">Python Status: Idle</div>
+      </div>
+
+      <!-- Local GeoJSON Footprints & Layers -->
+      <div class="panel">
+        <h2>Layers & Footprints</h2>
+        <button class="btn primary" id="load-geojson-btn" style="width:100%;">Reload Local Layers & GeoJSON</button>
         <div id="scan-status">Ready to load `buildings.geojson`.</div>
       </div>
 
-      <!-- Threshold -->
+      <!-- Flag Threshold -->
       <div class="panel">
         <h2>Flag Threshold</h2>
         <label class="field-label" for="threshold-input">Minimum GFA (sq ft) to flag</label>
@@ -141,11 +170,11 @@
           <div><label class="field-label">Year Built</label><input type="text" id="f_Year_Built"></div>
           <div><label class="field-label">Reporting Start</label><input type="text" id="f_Reporting_Start_Date" value="2026-01-01"></div>
           <div><label class="field-label">Primary Use Type</label><input type="text" id="f_Primary_Use_Type" value="Commercial"></div>
-          <div><label class="field-label">Government Type</label><input type="text" id="f_Government_Type" value="Municipal"></div>
-          <div><label class="field-label">Assessor GFA</label><input type="text" id="f_Assessor_GFA"></div>
+          <div><label class="field-label">Municipal Zoning</label><input type="text" id="f_Government_Type" value="Municipal / Zone-1"></div>
+          <div><label class="field-label">Assessor / Measured GFA</label><input type="text" id="f_Assessor_GFA"></div>
           
           <div class="full-width"><label class="field-label">Building Address Source</label><input type="text" id="f_Building_Address_Source" value="County Assessor / GIS"></div>
-          <div class="full-width"><label class="field-label">Building Address Name</label><input type="text" id="f_Building_Address_Name"></div>
+          <div class="full-width"><label class="field-label">Section Boundary / Name</label><input type="text" id="f_Building_Address_Name"></div>
           <div class="full-width"><label class="field-label">Building Street</label><input type="text" id="f_Building_Street"></div>
           
           <div><label class="field-label">Suite/Apt</label><input type="text" id="f_Building_Suite_Apt"></div>
@@ -179,7 +208,7 @@
         <h2>Measured Buildings Log</h2>
         <div id="log-empty">No buildings saved yet.</div>
         <table id="log-table" style="display:none;">
-          <thead><tr><th>Street / Parcel</th><th style="text-align:right;">GFA</th><th></th></tr></thead>
+          <thead><tr><th>Street / Parcel</th><th style="text-align:right;">GFA (sq ft)</th><th></th></tr></thead>
           <tbody id="log-body"></tbody>
         </table>
       </div>
@@ -191,10 +220,60 @@
   </div>
 </div>
 
+<!-- Embedded Python Logic via PyScript -->
+<script type="py">
+import pandas as pd
+import requests
+from js import document, alert
+from pyodide.ffi import create_proxy
+
+addresses = [
+    "2900 S ESTES ST",
+    "12201 MORRISON RD",
+    "5290 W ARIZONA AVE",
+    "3604 S KIPLING PKWY",
+    "6565 W JEWELL AVE",
+    "8507 W HAMPDEN AVE"
+]
+
+def search_jeffco_property(address):
+    url = "https://propertysearch.jeffco.us/propertyRecordsSearch/Address"
+    payload = {"address": address}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        response = requests.post(url, data=payload, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return response.json()
+    except Exception as e:
+        print(f"Error fetching {address}: {e}")
+    return None
+
+def run_python_lookup(event):
+    status_el = document.getElementById("py-status")
+    status_el.textContent = "Processing JeffCo records via Python..."
+    
+    results = []
+    for addr in addresses:
+        data = search_jeffco_property(addr)
+        results.append({"Address": addr, "AssessorData": data})
+
+    df = pd.DataFrame(results)
+    df.to_csv("JeffCo_Property_Records.csv", index=False)
+    status_el.textContent = f"Processed {len(df)} records! Export ready."
+    alert("Python Assessor Lookup Completed!")
+
+# Bind python function to the UI button
+btn = document.getElementById("py-run-btn")
+if btn:
+    btn.addEventListener("click", create_proxy(run_python_lookup))
+</script>
+
+<!-- Leaflet JavaScript dependencies & Main Mapper Logic -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/leaflet.draw.js"></script>
 <script>
 (function () {
-  var LOG_KEY = 'lakewood-30field-log-v1';
+  var LOG_KEY = 'lakewood-30field-log-v3';
   var FIELDS = [
     'Parcel_Number', 'Building_Count', 'Occupancy', 'Year_Built', 'Reporting_Start_Date',
     'Primary_Use_Type', 'Government_Type', 'Assessor_GFA', 'Building_Address_Source',
@@ -206,15 +285,15 @@
   ];
 
   var map, lightLayer, satelliteLayer, currentBasemap = 'light';
-  var scanGroup = null, overlayGroup = null, savedEntries = [];
+  var scanGroup = null, overlayGroup = null, drawnItems = null, savedEntries = [];
   var rawGeojsonData = null;
 
-  // Custom marker positions corresponding to point locations
-  var pointsData = [
-    [39.7180, -105.1000], [39.7155, -105.1050], [39.7120, -105.1100],
-    [39.7190, -105.1150], [39.7100, -105.0950], [39.7080, -105.1080],
-    [39.7135, -105.1020], [39.7160, -105.0900], [39.7050, -105.1180],
-    [39.7020, -105.1040], [39.7210, -105.1080], [39.7140, -105.1200]
+  var addressPoints = [
+    { lat: 39.7155, lng: -105.1090, addr: "1855 Denver W Ct", pin: "49-123-001", zoning: "C-1 Commercial", section: "Section 12", gfa: 12500 },
+    { lat: 39.7180, lng: -105.1000, addr: "1900 W Alameda Ave", pin: "49-123-002", zoning: "M-G General Municipal", section: "Section 12", gfa: 8400 },
+    { lat: 39.7120, lng: -105.1100, addr: "1200 S Union Blvd", pin: "49-123-003", zoning: "R-3 Residential", section: "Section 14", gfa: 15200 },
+    { lat: 39.7190, lng: -105.1150, addr: "2050 S Union Blvd", pin: "49-123-004", zoning: "C-2 Highway Commercial", section: "Section 14", gfa: 22000 },
+    { lat: 39.7080, lng: -105.1080, addr: "1405 Kipling St", pin: "49-123-005", zoning: "M-G General Municipal", section: "Section 15", gfa: 9100 }
   ];
 
   function initMap() {
@@ -232,65 +311,106 @@
 
     scanGroup = L.layerGroup().addTo(map);
     overlayGroup = L.layerGroup().addTo(map);
+    drawnItems = new L.FeatureGroup().addTo(map);
+
+    var drawControl = new L.Control.Draw({
+      draw: {
+        polyline: false, circle: false, circlemarker: false, marker: false,
+        polygon: { allowIntersection: false, showArea: true },
+        rectangle: { showArea: true }
+      },
+      edit: { featureGroup: drawnItems }
+    });
+    map.addControl(drawControl);
+
+    map.on(L.Draw.Event.CREATED, function (e) {
+      var layer = e.layer;
+      drawnItems.addLayer(layer);
+      var latLngs = layer.getLatLngs()[0];
+      var areaSqMeters = L.GeometryUtil.geodesicArea(latLngs);
+      var areaSqFt = Math.round(areaSqMeters * 10.7639);
+
+      document.getElementById('f_Assessor_GFA').value = areaSqFt;
+      document.getElementById('f_Building_Street').value = "Manual Measurement Polygon";
+      document.getElementById('f_Building_Address_Source').value = "Manual Draw Calculation";
+      document.getElementById('f_Government_Type').value = "Custom Section Draw";
+      alert("Measured Area: " + areaSqFt.toLocaleString() + " sq ft. Fields updated!");
+    });
 
     document.getElementById('load-geojson-btn').addEventListener('click', loadLocalGeoJSON);
     document.getElementById('map-style-btn').addEventListener('click', toggleMapStyle);
     document.getElementById('search-btn').addEventListener('click', doSearch);
     document.getElementById('save-fields-btn').addEventListener('click', saveActiveFields);
     document.getElementById('export-btn').addEventListener('click', exportCSV);
+    document.getElementById('clear-drawings-btn').addEventListener('click', function() {
+      drawnItems.clearLayers();
+    });
+    document.getElementById('measure-poly-btn').addEventListener('click', function() {
+      new L.Draw.Polygon(map).enable();
+    });
 
     renderCustomLayers();
     loadLog();
     renderLog();
     loadLocalGeoJSON();
+
+    setTimeout(function() { map.invalidateSize(); }, 300);
   }
 
   function renderCustomLayers() {
     overlayGroup.clearLayers();
 
-    // 1. Add Yellow Highlight Rectangle
-    var yellowBounds = [[39.7010, -105.1270], [39.7040, -105.1255]];
-    L.rectangle(yellowBounds, {
-      color: '#D4AF37',
-      fillColor: '#FFE700',
-      fillOpacity: 0.85,
-      weight: 1
+    var sectionBounds = [[39.7010, -105.1270], [39.7040, -105.1255]];
+    var boundaryPoly = L.rectangle(sectionBounds, {
+      color: '#D4AF37', fillColor: '#FFE700', fillOpacity: 0.65, weight: 2
     }).addTo(overlayGroup);
+    boundaryPoly.bindPopup("<strong>Section Boundary:</strong> Sector 4B<br><strong>Zoning:</strong> M-G Municipal");
 
-    // 2. Add Red Dot Markers
-    pointsData.forEach(function(coord) {
-      L.circleMarker(coord, {
-        radius: 5,
-        fillColor: '#800000',
-        color: '#800000',
-        weight: 1,
-        opacity: 1,
-        fillOpacity: 0.9
+    addressPoints.forEach(function(pt) {
+      var marker = L.circleMarker([pt.lat, pt.lng], {
+        radius: 6, fillColor: '#A23A2C', color: '#6E1D13', weight: 1.5, fillOpacity: 0.95
       }).addTo(overlayGroup);
+
+      marker.bindPopup("<strong>" + pt.addr + "</strong><br>Parcel: " + pt.pin + "<br>Zoning: " + pt.zoning + "<br>GFA: " + pt.gfa.toLocaleString() + " sq ft");
+      
+      marker.on('click', function(e) {
+        L.DomEvent.stopPropagation(e);
+        populateFields({
+          Parcel_Number: pt.pin,
+          Building_Count: 1,
+          Occupancy: '100%',
+          Reporting_Start_Date: '2026-01-01',
+          Primary_Use_Type: 'Commercial',
+          Government_Type: pt.zoning,
+          Assessor_GFA: pt.gfa,
+          Building_Address_Source: 'Address Dot Layer',
+          Building_Address_Name: pt.section,
+          Building_Street: pt.addr,
+          Building_City: 'Lakewood',
+          Building_County: 'Jefferson',
+          Building_Country: 'US',
+          Building_State: 'CO',
+          Building_Is_Primary: 'True',
+          Building_Do_Not_Mail: 'False'
+        });
+        document.getElementById('address-input').value = pt.addr;
+      });
     });
   }
 
   function toggleMapStyle() {
     var btn = document.getElementById('map-style-btn');
     if (currentBasemap === 'light') {
-      map.removeLayer(lightLayer);
-      satelliteLayer.addTo(map);
-      currentBasemap = 'satellite';
-      btn.textContent = 'Style: Satellite';
+      map.removeLayer(lightLayer); satelliteLayer.addTo(map); currentBasemap = 'satellite'; btn.textContent = 'Style: Satellite';
     } else {
-      map.removeLayer(satelliteLayer);
-      lightLayer.addTo(map);
-      currentBasemap = 'light';
-      btn.textContent = 'Style: Light Map';
+      map.removeLayer(satelliteLayer); lightLayer.addTo(map); currentBasemap = 'light'; btn.textContent = 'Style: Light Map';
     }
   }
 
   function populateFields(data) {
     FIELDS.forEach(function(f) {
       var el = document.getElementById('f_' + f);
-      if (el) {
-        el.value = data[f] !== undefined ? data[f] : '';
-      }
+      if (el) el.value = data[f] !== undefined ? data[f] : '';
     });
   }
 
@@ -305,43 +425,26 @@
 
   function parseFeatureTo30Fields(props) {
     props = props || {};
-    var addr = (props.PRPADDRESS || props.ADDRESS || '').trim();
-    var pin = props.PIN || props.PARCEL || props.PARCEL_NO || '';
-    var gfa = props.STTGRSAREA || props.GFA || props.SQFT || '';
-    var yrBuilt = props.YEARBUILT || props.YR_BUILT || props.YEAR_BUILT || '';
-    var useType = props.USE_TYPE || props.CLASS || 'Commercial';
-
     return {
-      Parcel_Number: pin,
-      Building_Count: 1,
-      Occupancy: '100%',
-      Year_Built: yrBuilt,
+      Parcel_Number: props.PIN || props.PARCEL || props.PARCEL_NO || '',
+      Building_Count: 1, Occupancy: '100%',
+      Year_Built: props.YEARBUILT || props.YR_BUILT || '',
       Reporting_Start_Date: '2026-01-01',
-      Primary_Use_Type: useType,
-      Government_Type: 'Municipal',
-      Assessor_GFA: gfa,
+      Primary_Use_Type: props.USE_TYPE || props.CLASS || 'Commercial',
+      Government_Type: props.ZONING || props.MUNICIPAL_ZONE || 'Municipal / Zone-1',
+      Assessor_GFA: props.STTGRSAREA || props.GFA || props.SQFT || '',
       Building_Address_Source: 'County Assessor / GIS',
-      Building_Address_Name: '',
-      Building_Street: addr,
+      Building_Address_Name: props.SECTION || props.SECTION_NUM || 'Section Boundary A',
+      Building_Street: (props.PRPADDRESS || props.ADDRESS || '').trim(),
       Building_Suite_Apt: '',
-      Building_City: props.CITY || 'Lakewood',
-      Building_County: 'Jefferson',
-      Building_Country: 'US',
-      Building_State: 'CO',
+      Building_City: props.CITY || 'Lakewood', Building_County: 'Jefferson', Building_Country: 'US', Building_State: 'CO',
       Building_Postal_Code: props.ZIP || props.POSTAL || '',
-      Building_Is_Primary: 'True',
-      Building_Do_Not_Mail: 'False',
-      Owner_Contact_Type: 'Property Owner',
-      Owner_Address_Source: 'Tax Records',
-      Owner_Name: props.OWNER || props.OWNER_NAME || '',
-      Owner_In_Care_Of: '',
-      Owner_Street: props.OWNER_STRT || props.OWNER_ADDR || '',
-      Owner_Suite_Apt: '',
-      Owner_City: props.OWNER_CITY || props.CITY || 'Lakewood',
-      Owner_County: 'Jefferson',
-      Owner_Country: 'US',
-      Owner_State_Province: props.OWNER_ST || 'CO',
-      Owner_Postal_Code: props.OWNER_ZIP || ''
+      Building_Is_Primary: 'True', Building_Do_Not_Mail: 'False',
+      Owner_Contact_Type: 'Property Owner', Owner_Address_Source: 'Tax Records',
+      Owner_Name: props.OWNER || props.OWNER_NAME || '', Owner_In_Care_Of: '',
+      Owner_Street: props.OWNER_STRT || props.OWNER_ADDR || '', Owner_Suite_Apt: '',
+      Owner_City: props.OWNER_CITY || 'Lakewood', Owner_County: 'Jefferson', Owner_Country: 'US',
+      Owner_State_Province: props.OWNER_ST || 'CO', Owner_Postal_Code: props.OWNER_ZIP || ''
     };
   }
 
@@ -359,8 +462,7 @@
           return {
             color: flagged ? '#A23A2C' : '#3D6B62',
             fillColor: flagged ? '#A23A2C' : '#3D6B62',
-            weight: flagged ? 2 : 1,
-            fillOpacity: flagged ? 0.4 : 0.2
+            weight: flagged ? 2 : 1, fillOpacity: flagged ? 0.4 : 0.2
           };
         },
         onEachFeature: function(feature, layer) {
@@ -371,18 +473,10 @@
             populateFields(parsedData);
             document.getElementById('address-input').value = parsedData.Building_Street;
           });
-
-          var props = feature.properties || {};
-          var popupContent = 
-            '<strong>Street:</strong> ' + (props.PRPADDRESS || 'N/A') + '<br>' +
-            '<strong>Parcel:</strong> ' + (props.PIN || 'N/A') + '<br>' +
-            '<strong>GFA:</strong> ' + (props.STTGRSAREA ? Math.round(props.STTGRSAREA).toLocaleString() + ' sq ft' : 'N/A');
-
-          layer.bindPopup(popupContent);
         }
       }).addTo(scanGroup);
 
-      document.getElementById('scan-status').textContent = 'Loaded ' + count.toLocaleString() + ' local footprints!';
+      document.getElementById('scan-status').textContent = 'Loaded ' + count.toLocaleString() + ' footprints & boundaries!';
     } catch(err) {
       document.getElementById('scan-status').textContent = 'Error parsing dataset: ' + err.message;
     }
@@ -392,7 +486,7 @@
     var statusEl = document.getElementById('scan-status');
     statusEl.textContent = 'Loading local buildings.geojson file...';
 
-    fetch('buildings.geojson')
+    fetch('buildings.geojson?v=' + new Date().getTime())
       .then(function(r) {
         if (!r.ok) throw new Error('HTTP ' + r.status + ' - ensure buildings.geojson is in root');
         return r.text();
@@ -435,13 +529,10 @@
     body.innerHTML = '';
 
     if (!savedEntries.length) {
-      table.style.display = 'none';
-      empty.style.display = 'block';
-      return;
+      table.style.display = 'none'; empty.style.display = 'block'; return;
     }
 
-    table.style.display = '';
-    empty.style.display = 'none';
+    table.style.display = ''; empty.style.display = 'none';
 
     savedEntries.forEach(function (entry, i) {
       var tr = document.createElement('tr');
@@ -457,9 +548,7 @@
       delBtn.className = 'del';
       delBtn.textContent = 'remove';
       delBtn.addEventListener('click', function () {
-        savedEntries.splice(i, 1);
-        persistLog();
-        renderLog();
+        savedEntries.splice(i, 1); persistLog(); renderLog();
       });
 
       tdDel.appendChild(delBtn);
