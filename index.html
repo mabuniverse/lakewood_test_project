@@ -745,7 +745,9 @@
       })
       .catch(function () {
         if (myToken !== lookupToken) return;
-        statusEl.textContent = 'Floor lookup failed (network issue) — enter floors manually if known.';
+        statusEl.textContent = 'Floor lookup failed (network issue) — enter floors manually if known. If this ' +
+          'keeps happening, Jeffco\'s server appears to only accept requests from US-based IP addresses — a VPN ' +
+          'with a US exit location fixes it for connections from outside the US.';
       });
   }
 
@@ -1481,7 +1483,9 @@
       })
       .catch(function (err) {
         statusEl.textContent = 'Scan failed (' + (err && err.message ? err.message : 'network issue') +
-          ') — try again shortly, or trace this area manually below.';
+          ') — try again shortly, or trace this area manually below. If this keeps happening, Jeffco\'s server ' +
+          'appears to only accept requests from US-based IP addresses — a VPN with a US exit location fixes it ' +
+          'for connections from outside the US.';
       });
   }
 
@@ -1588,9 +1592,11 @@
       if (matched === 0) {
         setConfirmedStatus(
           'Couldn\'t load the confirmed-building dots — no response came back from Jefferson County\'s data feed. ' +
-          'This usually means the device this is open on can\'t reach it right now (a network/firewall block, or a browser ' +
-          'restricting background requests when the file was opened by double-click). Try reloading, or open this via the ' +
-          'hosted GitHub Pages link instead of the local file (see the README) — that removes the most common cause.',
+          'Jeffco\'s server appears to only accept requests from US-based IP addresses — if you\'re connecting from ' +
+          'outside the US, a VPN with a US exit location fixes this (confirmed: it loads fine over a US VPN, and fails ' +
+          'on the same device/browser without one). If you\'re already on a US connection, it\'s more likely a ' +
+          'network/firewall block or a browser restricting background requests when the file was opened by double-click ' +
+          '— try reloading, or open this via the hosted GitHub Pages link instead of the local file (see the README).',
           true
         );
         return;
