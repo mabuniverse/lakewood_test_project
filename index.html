@@ -189,7 +189,10 @@
       <div class="panel">
         <h2>Auto-detect buildings <span style="font-weight:400; color:var(--ink-faint);">(Jeffco Assessor data)</span></h2>
         <div class="caveat">Queries Jefferson County's live parcel/assessor feed for the actual recorded building size (not a guess from imagery), pulls the full owner/parcel record with it, and flags anything at or above your threshold. It still can't know which already have a dot on the sandbox map &mdash; check each flagged one there before logging it as missing. Several parcels at one address usually means a condo/HOA complex &mdash; the popup lets you search Colorado's Secretary of State for the association's registered agent before you log it, per the condo protocol.</div>
-        <button class="btn primary" id="scan-btn" style="width:100%;">Scan current view for buildings</button>
+        <div class="row">
+          <button class="btn primary" id="scan-btn" style="flex:1.6;">Scan current view for buildings</button>
+          <button class="btn" id="scan-toggle-btn" disabled>Hide outlines</button>
+        </div>
         <div id="scan-status" style="margin-top:8px;"></div>
       </div>
 
@@ -1044,14 +1047,16 @@
   // ---------- Section boundaries: real Lakewood city limits, split into 4 quadrants ----------
   // Traced from the City of Lakewood's own published municipal boundary (public GIS record,
   // "OCTOBER 2023 CITY OF LAKEWOOD, COLORADO", verified against its recorded area of 44.661 sq mi),
-  // split along the two real dividing corridors: W 6th Ave Freeway (US-6) for north/south, and
-  // Kipling St for east/west — the road between the Denver Federal Center and Lakewood Park,
-  // confirmed against Lakewood Park's own real coordinates. Both located by geocoding real points
-  // along each road's length (Kipling & 6th/Alameda/Jewell/Bowles/Colfax/32nd), not a single
-  // approximate crossing. Static data baked in below — no live lookup, no network dependency.
+  // split along W 6th Ave Freeway (US-6) for north/south, and Kipling St / S Kipling Pkwy for
+  // east/west. Kipling isn't straight here — between W Alameda Ave and W Yale Ave it becomes
+  // "S Kipling Pkwy" and bows a real ~0.01° west (confirmed against an actual street address,
+  // 1545 S Kipling Pkwy, plus cross-streets at Center/Mississippi/Jewell — all 100-score geocode
+  // matches) before rejoining the straight line further south. That bow is why the boundary curves
+  // between Main and Smith Reservoirs instead of cutting straight through them. Static data baked
+  // in below — no live lookup, no network dependency.
   var QUADRANT_META = {
     SW: { color: '#D9A82E', text: 'Yellow · You (Mabell)', labelLatLng: [39.67895, -105.15555] },
-    SE: { color: '#8B5E3C', text: 'Brown · Ken', labelLatLng: [39.67255, -105.08148] },
+    SE: { color: '#8B5E3C', text: 'Brown · Ken', labelLatLng: [39.67255, -105.08375] },
     NE: { color: '#3355CC', text: 'Blue · Myles', labelLatLng: [39.74175, -105.08142] },
     NW: { color: '#2E9E4E', text: 'Green · Kylie', labelLatLng: [39.74405, -105.12607] }
   };
@@ -1059,8 +1064,8 @@
   var QUADRANT_POLYS = {
     NW: [[[[39.7613,-105.1153],[39.7547,-105.119],[39.75472,-105.10968],[39.7402,-105.10963],[39.7256,-105.10978],[39.7256,-105.16666],[39.7295,-105.169],[39.74,-105.1666],[39.7414,-105.1611],[39.7472,-105.1654],[39.7472,-105.1516],[39.7344,-105.1529],[39.7356,-105.1471],[39.7274,-105.1617],[39.7292,-105.1378],[39.74,-105.133],[39.7389,-105.1471],[39.7415,-105.1425],[39.7582,-105.1425],[39.7613,-105.1153]],[[39.7342,-105.1529],[39.7336,-105.1562],[39.7337,-105.1552],[39.7342,-105.1529]],[[39.7412,-105.1568],[39.7397,-105.1582],[39.7388,-105.1573],[39.7412,-105.1568]],[[39.7264,-105.1573],[39.7272,-105.1582],[39.7264,-105.1583],[39.7264,-105.1573]],[[39.743,-105.1579],[39.7449,-105.1603],[39.7432,-105.162],[39.743,-105.1579]],[[39.739,-105.1635],[39.7407,-105.1605],[39.7404,-105.1636],[39.739,-105.1635]],[[39.7383,-105.1634],[39.7389,-105.1655],[39.7377,-105.1655],[39.7383,-105.1634]],[[39.7268,-105.1656],[39.7272,-105.1661],[39.7268,-105.1661],[39.7268,-105.1656]]]],
     NE: [[[[39.75472,-105.10968],[39.7548,-105.072],[39.7476,-105.0744],[39.7476,-105.0637],[39.744,-105.0625],[39.7476,-105.0591],[39.7433,-105.0532],[39.7256,-105.0532],[39.7256,-105.10978],[39.7402,-105.10963],[39.75472,-105.10968]]]],
-    SW: [[[[39.6523,-105.1183],[39.6385,-105.1376],[39.6345,-105.1623],[39.6495,-105.1818],[39.6536,-105.1797],[39.6535,-105.1713],[39.6591,-105.1769],[39.6545,-105.1676],[39.6603,-105.1624],[39.6676,-105.1656],[39.6638,-105.1847],[39.6819,-105.1907],[39.6819,-105.1828],[39.6891,-105.1827],[39.6927,-105.1937],[39.7037,-105.199],[39.7038,-105.1927],[39.7112,-105.1908],[39.7111,-105.1542],[39.7247,-105.154],[39.724,-105.1657],[39.7256,-105.16666],[39.7256,-105.10978],[39.7254,-105.10978],[39.7109,-105.10974],[39.6821,-105.10971],[39.65309,-105.10986],[39.6523,-105.1183]],[[39.682,-105.1224],[39.6749,-105.12],[39.6748,-105.1472],[39.6676,-105.1472],[39.6645,-105.1211],[39.6675,-105.1144],[39.676,-105.1198],[39.682,-105.1224]],[[39.6965,-105.1285],[39.6822,-105.1285],[39.6825,-105.1211],[39.6965,-105.118],[39.6965,-105.1285]],[[39.6534,-105.1314],[39.6533,-105.1189],[39.6604,-105.11861],[39.6604,-105.1185],[39.66057,-105.1186],[39.6654,-105.1184],[39.6598,-105.1203],[39.6534,-105.1314]],[[39.6386,-105.1644],[39.6455,-105.161],[39.6428,-105.1664],[39.6386,-105.1644]]]],
-    SE: [[[[39.7256,-105.0532],[39.6823,-105.0532],[39.6793,-105.0626],[39.675,-105.0626],[39.675,-105.0532],[39.6678,-105.0532],[39.6701,-105.0814],[39.662,-105.0814],[39.6569,-105.0673],[39.6535,-105.0673],[39.6526,-105.0767],[39.6496,-105.0632],[39.646,-105.0632],[39.646,-105.0721],[39.6394,-105.0769],[39.6368,-105.0733],[39.6362,-105.0813],[39.6395,-105.0863],[39.65,-105.0861],[39.6533,-105.081],[39.6554,-105.1094],[39.6244,-105.1096],[39.6262,-105.0819],[39.6313,-105.0816],[39.6185,-105.0651],[39.6184,-105.0932],[39.624,-105.0932],[39.624,-105.11001],[39.64292,-105.10991],[39.6531,-105.1097],[39.65309,-105.10986],[39.6821,-105.10971],[39.7109,-105.10974],[39.7254,-105.10978],[39.7256,-105.10978],[39.7256,-105.0532]],[[39.6821,-105.0792],[39.6763,-105.0813],[39.6763,-105.0698],[39.6821,-105.0699],[39.6821,-105.0792]],[[39.6215,-105.0929],[39.6228,-105.0916],[39.6228,-105.0929],[39.6215,-105.0929]]]]
+    SW: [[[[39.6523,-105.1183],[39.6385,-105.1376],[39.6345,-105.1623],[39.6495,-105.1818],[39.6536,-105.1797],[39.6535,-105.1713],[39.6591,-105.1769],[39.6545,-105.1676],[39.6603,-105.1624],[39.6676,-105.1656],[39.6638,-105.1847],[39.6819,-105.1907],[39.6819,-105.1828],[39.6891,-105.1827],[39.6927,-105.1937],[39.7037,-105.199],[39.7038,-105.1927],[39.7112,-105.1908],[39.7111,-105.1542],[39.7247,-105.154],[39.724,-105.1657],[39.7256,-105.16666],[39.7256,-105.10978],[39.7254,-105.10978],[39.71094,-105.10974],[39.70507,-105.11005],[39.69657,-105.11233],[39.69059,-105.11931],[39.6965,-105.118],[39.6965,-105.1285],[39.6822,-105.1285],[39.6825,-105.1211],[39.68939,-105.11957],[39.68203,-105.1203],[39.66523,-105.10965],[39.65309,-105.10978],[39.6523,-105.1183]],[[39.682,-105.1224],[39.6749,-105.12],[39.6748,-105.1472],[39.6676,-105.1472],[39.6645,-105.1211],[39.6675,-105.1144],[39.676,-105.1198],[39.682,-105.1224]],[[39.6534,-105.1314],[39.6533,-105.1189],[39.6604,-105.11861],[39.6604,-105.1185],[39.66057,-105.1186],[39.6654,-105.1184],[39.6598,-105.1203],[39.6534,-105.1314]],[[39.6386,-105.1644],[39.6455,-105.161],[39.6428,-105.1664],[39.6386,-105.1644]]]],
+    SE: [[[[39.7256,-105.0532],[39.6823,-105.0532],[39.6793,-105.0626],[39.675,-105.0626],[39.675,-105.0532],[39.6678,-105.0532],[39.6701,-105.0814],[39.662,-105.0814],[39.6569,-105.0673],[39.6535,-105.0673],[39.6526,-105.0767],[39.6496,-105.0632],[39.646,-105.0632],[39.646,-105.0721],[39.6394,-105.0769],[39.6368,-105.0733],[39.6362,-105.0813],[39.6395,-105.0863],[39.65,-105.0861],[39.6533,-105.081],[39.6554,-105.1094],[39.6244,-105.1096],[39.6262,-105.0819],[39.6313,-105.0816],[39.6185,-105.0651],[39.6184,-105.0932],[39.624,-105.0932],[39.624,-105.11],[39.64384,-105.10988],[39.64495,-105.10987],[39.6531,-105.1097],[39.65309,-105.10978],[39.66523,-105.10965],[39.68203,-105.1203],[39.68939,-105.11957],[39.69059,-105.11931],[39.69657,-105.11233],[39.70507,-105.11005],[39.71094,-105.10974],[39.7254,-105.10978],[39.7256,-105.10978],[39.7256,-105.0532]],[[39.6821,-105.0792],[39.6763,-105.0813],[39.6763,-105.0698],[39.6821,-105.0699],[39.6821,-105.0792]],[[39.6215,-105.0929],[39.6228,-105.0916],[39.6228,-105.0929],[39.6215,-105.0929]]]],
   };
 
   // Ray-casting point-in-polygon, honoring holes (even-odd rule per ring).
@@ -1269,6 +1274,9 @@
     var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
     statusEl.textContent = 'Querying Jefferson County parcel data…';
     scanGroup.clearLayers();
+    scanGroup.addTo(map); // a fresh scan always shows its results, even if outlines were hidden before
+    scanShown = true;
+    setScanToggleBtnState();
 
     var params = new URLSearchParams({
       where: 'STTGRSAREA >= ' + threshold,
@@ -1303,12 +1311,28 @@
         var note = data && data.exceededTransferLimit ? ' (more exist — zoom in for full coverage)' : '';
         statusEl.textContent = features.length + ' parcel(s) at or above ' + threshold.toLocaleString() +
           ' sq ft found in view' + note + '. Click a red outline for details, or Add to list.';
+        document.getElementById('scan-toggle-btn').disabled = (features.length === 0);
       })
       .catch(function (err) {
         statusEl.textContent = 'Scan failed (' + (err && err.message ? err.message : 'network issue') +
           ') — try again shortly, or trace this area manually below.';
       });
   }
+
+  // The scan outlines are clickable (for the popup/"Add to my list"), and a Leaflet vector layer's
+  // click swallows the map's own click — so while they're showing, clicking inside one opens its
+  // popup instead of dropping a trace point. This toggle lets you tuck them out of the way to trace
+  // freely underneath without losing what was flagged (the status line above still says what was
+  // found; re-scanning brings the outlines back).
+  var scanShown = true;
+  function setScanToggleBtnState() {
+    document.getElementById('scan-toggle-btn').textContent = scanShown ? 'Hide outlines' : 'Show outlines';
+  }
+  document.getElementById('scan-toggle-btn').addEventListener('click', function () {
+    scanShown = !scanShown;
+    if (scanShown) { scanGroup.addTo(map); } else { map.removeLayer(scanGroup); }
+    setScanToggleBtnState();
+  });
 
   document.getElementById('scan-btn').addEventListener('click', scanVisibleArea);
 
