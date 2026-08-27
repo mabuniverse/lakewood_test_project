@@ -117,6 +117,13 @@
   .legend-dot { width: 12px; height: 12px; border-radius: 3px; flex: none; }
   .legend-row .who { color: var(--ink-faint); }
 
+  .quad-select-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .quad-btn {
+    font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+    padding: 5px 10px; border-radius: 100px; border: 2px solid var(--qc, #999);
+    background: #fff; color: var(--qc, #333); line-height: 1.3;
+  }
+  .quad-btn.active { background: var(--qc, #999); color: #fff; }
   .quadrant-label {
     font-family: "Segoe UI", system-ui, sans-serif;
     font-size: 12px; font-weight: 700; padding: 4px 10px; border-radius: 100px;
@@ -157,13 +164,19 @@
 
       <div class="panel">
         <h2>Section boundaries</h2>
-        <div id="boundary-status">Shows the S Kipling Pkwy / Kipling St and 6th Ave lines from Kasha's assignment, so you can see where each person's section ends and meets.</div>
-        <button class="btn primary" id="boundary-btn" style="width:100%;">Show section boundaries</button>
+        <div id="boundary-status">Real Lakewood city-limit boundaries, split along W 6th Ave (north/south) and Kipling St (east/west) — the road between the Federal Center and Lakewood Park — following each road's actual path, not just a single crossing point. Pick one below to highlight just that section — the rest dim out, and confirmed dots outside it hide, so it's obvious if you've drifted past your line.</div>
+        <div class="quad-select-row" id="quad-select-row">
+          <button class="quad-btn active" data-quad="ALL" style="--qc:#7a7a7a;">All</button>
+          <button class="quad-btn" data-quad="SW" style="--qc:#D9A82E;">Yellow (you)</button>
+          <button class="quad-btn" data-quad="SE" style="--qc:#8B5E3C;">Brown</button>
+          <button class="quad-btn" data-quad="NE" style="--qc:#3355CC;">Blue</button>
+          <button class="quad-btn" data-quad="NW" style="--qc:#2E9E4E;">Green</button>
+        </div>
         <div class="legend-swatches">
-          <div class="legend-row"><span class="legend-dot" style="background:#E8C33D;"></span>Yellow <span class="who">&mdash; you (Mabell)</span></div>
-          <div class="legend-row"><span class="legend-dot" style="background:#8B5E3C;"></span>Brown <span class="who">&mdash; Ken</span></div>
-          <div class="legend-row"><span class="legend-dot" style="background:#3355CC;"></span>Blue <span class="who">&mdash; Myles</span></div>
-          <div class="legend-row"><span class="legend-dot" style="background:#2E9E4E;"></span>Green <span class="who">&mdash; Kylie</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#D9A82E;"></span>Yellow (SW) <span class="who">&mdash; you (Mabell)</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#8B5E3C;"></span>Brown (SE) <span class="who">&mdash; Ken</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#3355CC;"></span>Blue (NE) <span class="who">&mdash; Myles</span></div>
+          <div class="legend-row"><span class="legend-dot" style="background:#2E9E4E;"></span>Green (NW) <span class="who">&mdash; Kylie</span></div>
         </div>
       </div>
 
@@ -181,10 +194,11 @@
       </div>
 
       <div class="panel">
-        <h2>Local building footprints <span style="font-weight:400; color:var(--ink-faint);">(your buildings.geojson)</span></h2>
-        <div class="caveat">Loads the county-wide building outlines from the <code>buildings.geojson</code> file you exported, straight from this page &mdash; no per-view querying needed. Each outline starts with just address/PIN/size; click one to fetch its full assessor record (owner, floors, subdivision, etc.) the same way the live scan does. Only buildings at or above your threshold are shown. This only works when the page is served over http/https (e.g. GitHub Pages) with <code>buildings.geojson</code> sitting next to <code>index.html</code> in the same repo &mdash; it can't load from a double-clicked local file.</div>
-        <button class="btn primary" id="load-local-btn" style="width:100%;">Load buildings.geojson</button>
-        <div id="local-status" style="margin-top:8px;"></div>
+        <h2>Municipal zoning <span style="font-weight:400; color:var(--ink-faint);">(City of Lakewood)</span></h2>
+        <div class="caveat">Shows Lakewood's actual zoning districts (Title 17 of the Municipal Code) as a translucent color overlay &mdash; separate from the Yellow/Brown/Blue/Green team-section lines above. Useful context (e.g. confirming a parcel is zoned for a use that would make it CBL-covered), not a substitute for the section boundaries.</div>
+        <button class="btn primary" id="zoning-btn" style="width:100%;">Show zoning districts</button>
+        <div id="zoning-status" style="margin-top:8px;"></div>
+        <div id="zoning-legend" style="margin-top:8px; display:none; font-size:12px;"></div>
       </div>
 
       <div class="panel" id="drawing-panel">
@@ -239,7 +253,6 @@
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/topojson-client/3.1.0/topojson-client.min.js"></script>
 <script>
 (function () {
   var LOG_KEY = 'lakewood-footprint-tool-log-v2';
@@ -253,16 +266,17 @@
   var savedEntries = [];
   var lastSearchedLabel = '';
   var boundaryGroup = null;
-  var boundariesShown = false;
-  var boundariesLoaded = false;
+  var selectedQuadrant = 'ALL';
+  var confirmedDots = []; // { layer, quadrant } — every confirmed-building dot, for quadrant filtering
   var scanGroup = null;
-  var BOUNDARY_KEY = 'lakewood-footprint-tool-boundaries-v1';
   var lastFootprintSqft = 0;
   var currentAssessorMatch = null; // Jeffco attributes matched to the current trace, if any
   var currentSosMatch = null; // Colorado SOS entity record picked for the current trace, if any (condo/HOA only)
   var lookupToken = 0; // guards against a stale async lookup overwriting a newer trace
-  var localLayerGroup = null;
-  var localBuildingsLoaded = false;
+  var confirmedGroup = null;
+  var confirmedLoaded = false;
+  var zoningGroup = null;
+  var zoningLoaded = false;
 
   // ---------- Jefferson County live parcel/assessor feed ----------
   // Source: Jeffco "Parcel" feature service (Assessor's Office + Business & Innovation Technologies), CC-BY 4.0.
@@ -386,7 +400,7 @@
 
   // ---------- Map setup ----------
   function initMap() {
-    map = L.map('map', { doubleClickZoom: false, maxZoom: 21 }).setView([39.6987, -105.0770], 13);
+    map = L.map('map', { doubleClickZoom: false, maxZoom: 21 }).setView([39.6899, -105.1261], 12);
 
     imageryLayer = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
@@ -401,9 +415,10 @@
     map.on('click', onMapClick);
     map.on('dblclick', function () { finishShape(); });
 
-    boundaryGroup = L.layerGroup();
+    boundaryGroup = L.layerGroup().addTo(map);
     scanGroup = L.layerGroup().addTo(map);
-    localLayerGroup = L.layerGroup().addTo(map);
+    confirmedGroup = L.layerGroup();
+    zoningGroup = L.layerGroup();
 
     loadLog();
     renderLog();
@@ -495,14 +510,51 @@
     return { lat: sumLat / latlngs.length, lng: sumLng / latlngs.length };
   }
 
+  // A bare point-intersects query misses whenever the trace's centroid lands just outside the
+  // recorded parcel line — a sliver gap between neighboring parcels in the county's own geometry,
+  // or the satellite imagery being a few feet off from the cadastral data underneath it. That's
+  // common enough (irregular/L-shaped traces especially) that it's worth a second, wider look
+  // before giving up. Returns { attrs, nearest: true/false } — nearest flags a fallback match so
+  // the UI can say so, rather than silently presenting a near-miss as an exact hit.
   function jeffcoLookupAtPoint(lat, lng) {
     return jeffcoQuery({
       where: '1=1', geometry: lng + ',' + lat, geometryType: 'esriGeometryPoint', inSR: '4326',
       spatialRel: 'esriSpatialRelIntersects', outFields: JEFFCO_FULL_FIELDS,
       returnGeometry: 'false', resultRecordCount: '1', f: 'json'
     }).then(function (data) {
-      return (data && data.features && data.features.length) ? data.features[0].attributes : null;
+      if (data && data.features && data.features.length) {
+        return { attrs: data.features[0].attributes, nearest: false };
+      }
+      return jeffcoLookupNearPoint(lat, lng).then(function (attrs) {
+        return attrs ? { attrs: attrs, nearest: true } : null;
+      });
     });
+  }
+
+  // Widens the search to a ~35m box around the point and, if that turns up one or more parcels,
+  // returns whichever one's own centroid is closest to the point we were actually looking for.
+  function jeffcoLookupNearPoint(lat, lng) {
+    var d = 0.00035;
+    var envelope = JSON.stringify({
+      xmin: lng - d, ymin: lat - d, xmax: lng + d, ymax: lat + d,
+      spatialReference: { wkid: 4326 }
+    });
+    return jeffcoQuery({
+      where: '1=1', geometry: envelope, geometryType: 'esriGeometryEnvelope', inSR: '4326',
+      spatialRel: 'esriSpatialRelIntersects', outFields: JEFFCO_FULL_FIELDS,
+      returnGeometry: 'true', outSR: '4326', resultRecordCount: '10', f: 'json'
+    }).then(function (data) {
+      if (!data || !data.features || !data.features.length) return null;
+      var best = null, bestDist = Infinity;
+      data.features.forEach(function (f) {
+        if (!f.geometry || !f.geometry.rings || !f.geometry.rings.length) return;
+        var c = centroidOf(ringToLatLngs(f.geometry.rings[0]));
+        var dLat = c.lat - lat, dLng = c.lng - lng;
+        var dist = dLat * dLat + dLng * dLng;
+        if (dist < bestDist) { bestDist = dist; best = f.attributes; }
+      });
+      return best;
+    }).catch(function () { return null; });
   }
 
   // Appends a small "search Colorado SOS" control into `container`, seeded with nameGuess.
@@ -625,18 +677,20 @@
     checkEl.style.display = 'none';
     var c = centroidOf(currentPath);
     jeffcoLookupAtPoint(c.lat, c.lng)
-      .then(function (attrs) {
+      .then(function (result) {
         if (myToken !== lookupToken) return; // a newer trace superseded this lookup
+        var attrs = result ? result.attrs : null;
         currentAssessorMatch = attrs;
         currentSosMatch = null;
         if (attrs) {
           if (attrs.STTNBRFLR) document.getElementById('floors-input').value = attrs.STTNBRFLR;
           statusEl.textContent = 'Matched PIN ' + (attrs.PIN || attrs.PARCELID || '—') +
+            (result.nearest ? ' (nearest parcel — your trace center didn\'t land exactly inside it)' : '') +
             (attrs.STTNBRFLR ? ' — floors auto-filled.' : ' — no floor count on file, enter it manually if known.') +
             ' Override if this trace covers a different building.';
           renderAssessorCheck();
         } else {
-          statusEl.textContent = 'No Jeffco parcel matched this location — enter floors manually if known.';
+          statusEl.textContent = 'No Jeffco parcel found within about 35m of this trace — enter floors manually if known.';
         }
         updateGfaAndFlag();
       })
@@ -987,108 +1041,119 @@
     this.textContent = labelsOn ? 'Labels: on' : 'Labels: off';
   });
 
-  // ---------- Section boundaries (Kipling St/S Kipling Pkwy x 6th Ave) ----------
-  function nominatimGeojson(query) {
-    var url = 'https://nominatim.openstreetmap.org/search?format=geojson&polygon_geojson=1&limit=1&q=' + encodeURIComponent(query);
-    return fetch(url).then(function (r) { return r.json(); })
-      .then(function (fc) { return (fc && fc.features && fc.features.length) ? fc.features[0].geometry : null; })
-      .catch(function () { return null; });
-  }
-  function nominatimPoint(query) {
-    var url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(query);
-    return fetch(url).then(function (r) { return r.json(); })
-      .then(function (res) { return (res && res.length) ? { lat: parseFloat(res[0].lat), lng: parseFloat(res[0].lon) } : null; })
-      .catch(function () { return null; });
-  }
+  // ---------- Section boundaries: real Lakewood city limits, split into 4 quadrants ----------
+  // Traced from the City of Lakewood's own published municipal boundary (public GIS record,
+  // "OCTOBER 2023 CITY OF LAKEWOOD, COLORADO", verified against its recorded area of 44.661 sq mi),
+  // split along the two real dividing corridors: W 6th Ave Freeway (US-6) for north/south, and
+  // Kipling St for east/west — the road between the Denver Federal Center and Lakewood Park,
+  // confirmed against Lakewood Park's own real coordinates. Both located by geocoding real points
+  // along each road's length (Kipling & 6th/Alameda/Jewell/Bowles/Colfax/32nd), not a single
+  // approximate crossing. Static data baked in below — no live lookup, no network dependency.
+  var QUADRANT_META = {
+    SW: { color: '#D9A82E', text: 'Yellow · You (Mabell)', labelLatLng: [39.67895, -105.15555] },
+    SE: { color: '#8B5E3C', text: 'Brown · Ken', labelLatLng: [39.67255, -105.08148] },
+    NE: { color: '#3355CC', text: 'Blue · Myles', labelLatLng: [39.74175, -105.08142] },
+    NW: { color: '#2E9E4E', text: 'Green · Kylie', labelLatLng: [39.74405, -105.12607] }
+  };
 
-  var QUADRANTS = [
-    { dLat: 0.011, dLng: -0.014, color: '#2E9E4E', text: 'Green · Kylie' },
-    { dLat: 0.011, dLng: 0.014, color: '#3355CC', text: 'Blue · Myles' },
-    { dLat: -0.011, dLng: -0.014, color: '#E8C33D', text: 'Yellow · You' },
-    { dLat: -0.011, dLng: 0.014, color: '#8B5E3C', text: 'Brown · Ken' }
-  ];
-  var FALLBACK_INTERSECTION = { lat: 39.699, lng: -105.077 };
+  var QUADRANT_POLYS = {
+    NW: [[[[39.7613,-105.1153],[39.7547,-105.119],[39.75472,-105.10968],[39.7402,-105.10963],[39.7256,-105.10978],[39.7256,-105.16666],[39.7295,-105.169],[39.74,-105.1666],[39.7414,-105.1611],[39.7472,-105.1654],[39.7472,-105.1516],[39.7344,-105.1529],[39.7356,-105.1471],[39.7274,-105.1617],[39.7292,-105.1378],[39.74,-105.133],[39.7389,-105.1471],[39.7415,-105.1425],[39.7582,-105.1425],[39.7613,-105.1153]],[[39.7342,-105.1529],[39.7336,-105.1562],[39.7337,-105.1552],[39.7342,-105.1529]],[[39.7412,-105.1568],[39.7397,-105.1582],[39.7388,-105.1573],[39.7412,-105.1568]],[[39.7264,-105.1573],[39.7272,-105.1582],[39.7264,-105.1583],[39.7264,-105.1573]],[[39.743,-105.1579],[39.7449,-105.1603],[39.7432,-105.162],[39.743,-105.1579]],[[39.739,-105.1635],[39.7407,-105.1605],[39.7404,-105.1636],[39.739,-105.1635]],[[39.7383,-105.1634],[39.7389,-105.1655],[39.7377,-105.1655],[39.7383,-105.1634]],[[39.7268,-105.1656],[39.7272,-105.1661],[39.7268,-105.1661],[39.7268,-105.1656]]]],
+    NE: [[[[39.75472,-105.10968],[39.7548,-105.072],[39.7476,-105.0744],[39.7476,-105.0637],[39.744,-105.0625],[39.7476,-105.0591],[39.7433,-105.0532],[39.7256,-105.0532],[39.7256,-105.10978],[39.7402,-105.10963],[39.75472,-105.10968]]]],
+    SW: [[[[39.6523,-105.1183],[39.6385,-105.1376],[39.6345,-105.1623],[39.6495,-105.1818],[39.6536,-105.1797],[39.6535,-105.1713],[39.6591,-105.1769],[39.6545,-105.1676],[39.6603,-105.1624],[39.6676,-105.1656],[39.6638,-105.1847],[39.6819,-105.1907],[39.6819,-105.1828],[39.6891,-105.1827],[39.6927,-105.1937],[39.7037,-105.199],[39.7038,-105.1927],[39.7112,-105.1908],[39.7111,-105.1542],[39.7247,-105.154],[39.724,-105.1657],[39.7256,-105.16666],[39.7256,-105.10978],[39.7254,-105.10978],[39.7109,-105.10974],[39.6821,-105.10971],[39.65309,-105.10986],[39.6523,-105.1183]],[[39.682,-105.1224],[39.6749,-105.12],[39.6748,-105.1472],[39.6676,-105.1472],[39.6645,-105.1211],[39.6675,-105.1144],[39.676,-105.1198],[39.682,-105.1224]],[[39.6965,-105.1285],[39.6822,-105.1285],[39.6825,-105.1211],[39.6965,-105.118],[39.6965,-105.1285]],[[39.6534,-105.1314],[39.6533,-105.1189],[39.6604,-105.11861],[39.6604,-105.1185],[39.66057,-105.1186],[39.6654,-105.1184],[39.6598,-105.1203],[39.6534,-105.1314]],[[39.6386,-105.1644],[39.6455,-105.161],[39.6428,-105.1664],[39.6386,-105.1644]]]],
+    SE: [[[[39.7256,-105.0532],[39.6823,-105.0532],[39.6793,-105.0626],[39.675,-105.0626],[39.675,-105.0532],[39.6678,-105.0532],[39.6701,-105.0814],[39.662,-105.0814],[39.6569,-105.0673],[39.6535,-105.0673],[39.6526,-105.0767],[39.6496,-105.0632],[39.646,-105.0632],[39.646,-105.0721],[39.6394,-105.0769],[39.6368,-105.0733],[39.6362,-105.0813],[39.6395,-105.0863],[39.65,-105.0861],[39.6533,-105.081],[39.6554,-105.1094],[39.6244,-105.1096],[39.6262,-105.0819],[39.6313,-105.0816],[39.6185,-105.0651],[39.6184,-105.0932],[39.624,-105.0932],[39.624,-105.11001],[39.64292,-105.10991],[39.6531,-105.1097],[39.65309,-105.10986],[39.6821,-105.10971],[39.7109,-105.10974],[39.7254,-105.10978],[39.7256,-105.10978],[39.7256,-105.0532]],[[39.6821,-105.0792],[39.6763,-105.0813],[39.6763,-105.0698],[39.6821,-105.0699],[39.6821,-105.0792]],[[39.6215,-105.0929],[39.6228,-105.0916],[39.6228,-105.0929],[39.6215,-105.0929]]]]
+  };
 
-  function drawBoundaries(data) {
-    boundaryGroup.clearLayers();
-    function addRoad(geom, label) {
-      if (!geom) return;
-      var layer = L.geoJSON(geom, { style: { color: '#1a1a1a', weight: 4, dashArray: '2 8', opacity: 0.85 } });
-      layer.bindTooltip(label, { sticky: true });
-      boundaryGroup.addLayer(layer);
+  // Ray-casting point-in-polygon, honoring holes (even-odd rule per ring).
+  function pointInRing(lat, lng, ring) {
+    var inside = false;
+    for (var i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      var yi = ring[i][0], xi = ring[i][1], yj = ring[j][0], xj = ring[j][1];
+      var intersect = ((yi > lat) !== (yj > lat)) &&
+        (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+      if (intersect) inside = !inside;
     }
-    addRoad(data.kiplingSouth, 'S Kipling Pkwy — section boundary');
-    addRoad(data.kiplingNorth, 'Kipling St — section boundary');
-    addRoad(data.sixthAve, '6th Ave — section boundary');
+    return inside;
+  }
+  function pointInQuadrant(lat, lng, quadName) {
+    var polys = QUADRANT_POLYS[quadName];
+    for (var p = 0; p < polys.length; p++) {
+      var rings = polys[p];
+      if (!pointInRing(lat, lng, rings[0])) continue;
+      var inHole = false;
+      for (var h = 1; h < rings.length; h++) {
+        if (pointInRing(lat, lng, rings[h])) { inHole = true; break; }
+      }
+      if (!inHole) return true;
+    }
+    return false;
+  }
+  function getQuadrantForLatLng(lat, lng) {
+    var names = ['NW', 'NE', 'SW', 'SE'];
+    for (var i = 0; i < names.length; i++) {
+      if (pointInQuadrant(lat, lng, names[i])) return names[i];
+    }
+    return null; // outside the city limits entirely
+  }
 
-    var pt = data.intersection || FALLBACK_INTERSECTION;
-    QUADRANTS.forEach(function (q) {
-      var marker = L.marker([pt.lat + q.dLat, pt.lng + q.dLng], {
+  // Fill opacities kept deliberately light — this sits on top of satellite imagery, and a
+  // strong wash (especially over yellow/gold) was making nearby buildings hard to read.
+  function quadrantStyle(name, isSelected, anySelected) {
+    if (!anySelected) return { color: QUADRANT_META[name].color, weight: 2.5, opacity: 0.85, fillColor: QUADRANT_META[name].color, fillOpacity: 0.1 };
+    if (isSelected) return { color: QUADRANT_META[name].color, weight: 3.5, opacity: 1, fillColor: QUADRANT_META[name].color, fillOpacity: 0.18 };
+    return { color: QUADRANT_META[name].color, weight: 1, opacity: 0.25, fillColor: QUADRANT_META[name].color, fillOpacity: 0.03 };
+  }
+
+  var quadLayers = {}; // quadName -> array of L.polygon layers (one per disjoint part)
+
+  function renderQuadrants() {
+    boundaryGroup.clearLayers();
+    quadLayers = {};
+    var anySelected = selectedQuadrant !== 'ALL';
+    Object.keys(QUADRANT_POLYS).forEach(function (name) {
+      var meta = QUADRANT_META[name];
+      var isSelected = selectedQuadrant === name;
+      var style = quadrantStyle(name, isSelected, anySelected);
+      quadLayers[name] = [];
+      QUADRANT_POLYS[name].forEach(function (rings) {
+        // Leaflet polygon: first array is the outer ring, rest are holes.
+        var layer = L.polygon(rings, style);
+        // Only show the hover tooltip in "All" view — once a section is picked, the color
+        // highlight already says which one you're in, so a label chasing the cursor is just noise.
+        if (!anySelected) layer.bindTooltip(meta.text, { sticky: true });
+        boundaryGroup.addLayer(layer);
+        quadLayers[name].push(layer);
+      });
+      var label = L.marker(meta.labelLatLng, {
         icon: L.divIcon({
           className: '',
-          html: '<div class="quadrant-label" style="background:' + q.color + ';">' + q.text + '</div>',
+          html: '<div class="quadrant-label" style="background:' + meta.color + '; opacity:' + (anySelected && !isSelected ? '0.35' : '1') + ';">' + meta.text + '</div>',
           iconSize: null
         }),
         interactive: false
       });
-      boundaryGroup.addLayer(marker);
-    });
-
-    var missing = [];
-    if (!data.kiplingSouth) missing.push('S Kipling Pkwy');
-    if (!data.kiplingNorth) missing.push('Kipling St');
-    if (!data.sixthAve) missing.push('6th Ave');
-    var statusEl = document.getElementById('boundary-status');
-    statusEl.textContent = missing.length
-      ? 'Loaded, but couldn\'t find exact road geometry for: ' + missing.join(', ') + '. Quadrant labels are still placed correctly.'
-      : 'Dashed lines mark the section dividers from Kasha\'s map; labels show whose section is which.';
-  }
-
-  function fetchBoundaries() {
-    document.getElementById('boundary-status').textContent = 'Looking up the boundary roads…';
-    return Promise.all([
-      nominatimGeojson('South Kipling Parkway, Lakewood, Colorado'),
-      nominatimGeojson('Kipling Street, Wheat Ridge, Colorado'),
-      nominatimGeojson('West 6th Avenue, Lakewood, Colorado'),
-      nominatimPoint('Kipling Street and 6th Avenue, Lakewood, Colorado')
-    ]).then(function (results) {
-      var data = {
-        kiplingSouth: results[0], kiplingNorth: results[1], sixthAve: results[2],
-        intersection: results[3] || FALLBACK_INTERSECTION
-      };
-      try { localStorage.setItem(BOUNDARY_KEY, JSON.stringify(data)); } catch (e) {}
-      boundariesLoaded = true;
-      drawBoundaries(data);
+      boundaryGroup.addLayer(label);
     });
   }
 
-  function tryLoadCachedBoundaries() {
-    try {
-      var cached = localStorage.getItem(BOUNDARY_KEY);
-      if (cached) { drawBoundaries(JSON.parse(cached)); boundariesLoaded = true; }
-    } catch (e) {}
+  function applyQuadrantFilterToConfirmed() {
+    confirmedDots.forEach(function (d) {
+      var show = selectedQuadrant === 'ALL' || d.quadrant === selectedQuadrant;
+      if (show) { if (!confirmedGroup.hasLayer(d.layer)) confirmedGroup.addLayer(d.layer); }
+      else { if (confirmedGroup.hasLayer(d.layer)) confirmedGroup.removeLayer(d.layer); }
+    });
   }
 
-  document.getElementById('boundary-btn').addEventListener('click', function () {
-    var btn = this;
-    function reveal() {
-      boundaryGroup.addTo(map);
-      boundariesShown = true;
-      btn.textContent = 'Hide section boundaries';
-    }
-    if (boundariesShown) {
-      map.removeLayer(boundaryGroup);
-      boundariesShown = false;
-      btn.textContent = 'Show section boundaries';
-      return;
-    }
-    if (boundariesLoaded) { reveal(); return; }
-    btn.disabled = true; btn.textContent = 'Loading…';
-    fetchBoundaries().then(function () { btn.disabled = false; reveal(); })
-      .catch(function () {
-        btn.disabled = false; btn.textContent = 'Show section boundaries';
-        document.getElementById('boundary-status').textContent = 'Could not load boundary roads (network issue) — try again in a moment.';
-      });
+  function selectQuadrant(name) {
+    selectedQuadrant = name;
+    renderQuadrants();
+    applyQuadrantFilterToConfirmed();
+    document.querySelectorAll('#quad-select-row .quad-btn').forEach(function (btn) {
+      btn.classList.toggle('active', btn.getAttribute('data-quad') === name);
+    });
+  }
+
+  document.querySelectorAll('#quad-select-row .quad-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () { selectQuadrant(this.getAttribute('data-quad')); });
   });
 
   // ---------- Auto-detect buildings via Jefferson County's live parcel/assessor feed ----------
@@ -1097,9 +1162,9 @@
     return ring.map(function (pt) { return { lat: pt[1], lng: pt[0] }; });
   }
 
-  // Shared popup/quick-add rendering for a candidate building, used by both the
-  // live scan (scanVisibleArea) and the local buildings.geojson layer (loadLocalBuildings).
-  // When needsEnrichment is true, attrs is assumed to be the sparse local-file record
+  // Shared popup/quick-add rendering for a candidate building — currently only used by the
+  // live scan (scanVisibleArea), but kept general in case another entry point needs it later.
+  // When needsEnrichment is true, attrs is assumed to be a sparse record (address/PIN/size only)
   // (PRPADDRESS/PIN/STTGRSAREA/OBJECTID only) and the full record is fetched from the
   // live Jeffco feed by PIN the first time the popup is opened.
   function renderCandidateBuilding(latlngs, attrs, group, addressCounts, needsEnrichment) {
@@ -1247,101 +1312,142 @@
 
   document.getElementById('scan-btn').addEventListener('click', scanVisibleArea);
 
-  // ---------- Local buildings.geojson layer (your GitHub-hosted export) ----------
-  // Converts GeoJSON Polygon/MultiPolygon coordinates ([lng,lat] rings) into the
-  // {lat,lng} arrays renderCandidateBuilding expects. For a MultiPolygon this returns
-  // only the first polygon's outer ring — good enough for outlining a single building.
-  function geojsonCoordsToLatLngs(geometry) {
-    if (!geometry) return null;
-    var ring;
-    if (geometry.type === 'Polygon') {
-      ring = geometry.coordinates && geometry.coordinates[0];
-    } else if (geometry.type === 'MultiPolygon') {
-      ring = geometry.coordinates && geometry.coordinates[0] && geometry.coordinates[0][0];
-    }
-    if (!ring || !ring.length) return null;
-    return ring.map(function (pt) { return { lat: pt[1], lng: pt[0] }; });
+  // ---------- Confirmed buildings — Ken & Myles' verification list ----------
+  // Parcel numbers (PINs) already confirmed >= 10,000 sq ft and present on the sandbox map,
+  // deduplicated from the "Verification" sheet of Lakewood_Map_Verification_Ken_and_Myles.xlsx
+  // (764 unique parcels; the source sheet has one row per building, so some PINs repeat there
+  // for multi-building parcels). Embedded directly so this works with no extra file to host.
+  var CONFIRMED_PINS = ["49-341-00-001", "49-294-00-001", "49-241-17-002", "59-032-00-003", "49-243-00-010", "49-344-08-044", "39-352-03-034", "59-041-00-010", "49-353-00-009", "59-032-00-009", "49-134-06-010", "49-241-20-002", "59-041-00-002", "49-134-06-009", "59-032-00-007", "59-041-00-004", "39-364-06-158", "49-261-03-001", "49-084-00-034", "49-084-00-036", "49-062-04-043", "49-352-01-001", "49-173-07-013", "49-022-01-002", "39-354-20-001", "39-322-16-001", "49-152-02-107", "49-354-07-169", "49-334-00-005", "59-024-01-014", "49-021-11-010", "49-104-10-202", "39-333-01-001", "39-343-01-019", "49-131-03-045", "49-151-99-002", "49-083-00-012", "39-364-06-077", "49-054-13-114", "49-054-13-034", "49-044-17-002", "49-042-02-005", "49-031-00-076", "49-112-12-033", "49-141-09-002", "49-234-00-007", "49-023-00-032", "49-023-00-031", "49-252-03-106", "49-082-07-311", "49-083-05-026", "49-141-14-008", "49-351-01-018", "49-141-05-003", "49-033-00-009", "49-143-02-001", "49-081-04-008", "49-171-07-002", "49-014-13-022", "49-353-06-003", "49-021-05-006", "39-342-06-009", "49-054-12-007", "49-343-10-067", "49-083-01-411", "49-212-13-001", "49-084-02-003", "59-022-04-010", "49-023-00-034", "49-012-04-004", "49-062-04-045", "49-194-09-013", "49-282-02-002", "49-044-20-006", "49-031-00-014", "49-083-00-013", "49-083-06-007", "49-084-00-020", "49-352-02-001", "49-113-13-004", "49-113-13-026", "49-113-13-027", "39-293-00-029", "49-141-11-035", "49-242-00-009", "39-331-00-017", "49-081-04-001", "49-353-05-009", "49-023-00-022", "49-353-05-004", "49-081-04-002", "39-353-15-007", "39-354-04-003", "49-081-02-002", "39-331-13-003", "49-084-00-011", "49-142-04-028", "39-342-05-017", "39-344-18-005", "49-021-02-009", "49-331-01-002", "39-364-12-008", "49-084-02-002", "49-233-17-009", "49-114-06-136", "49-011-00-132", "39-363-06-001", "49-022-01-007", "39-363-05-111", "49-284-03-081", "49-033-14-024", "49-131-99-003", "49-142-03-002", "59-022-03-016", "49-012-13-051", "39-342-06-026", "49-022-11-012", "49-231-01-093", "49-012-13-003", "49-012-13-111", "49-334-03-001", "49-353-06-006", "49-123-21-007", "49-023-14-003", "49-043-00-001", "39-342-07-007", "49-022-14-008", "49-042-99-007", "39-353-00-016", "49-144-02-189", "49-031-00-028", "49-012-12-026", "49-081-03-012", "49-131-99-001", "39-363-05-141", "49-082-02-006", "39-364-03-014", "49-231-00-031", "49-043-02-005", "49-021-10-018", "49-023-14-007", "49-141-01-016", "39-343-02-054", "49-274-16-016", "49-262-00-004", "39-343-02-056", "49-084-06-001", "49-014-00-002", "49-172-03-007", "39-353-17-002", "49-103-12-002", "59-012-00-012", "49-354-06-001", "49-012-03-012", "49-124-23-004", "49-031-00-012", "39-351-00-063", "39-351-00-064", "39-353-99-013", "39-353-99-011", "49-033-01-001", "39-354-12-020", "49-062-03-040", "49-083-00-014", "49-141-10-039", "49-114-06-122", "49-042-04-001", "49-011-18-001", "49-272-99-002", "39-364-03-016", "49-354-07-164", "49-343-10-063", "49-014-00-017", "49-024-04-001", "49-024-04-002", "49-041-20-001", "39-342-06-017", "49-214-05-001", "49-141-14-151", "49-331-01-003", "49-214-04-001", "49-242-00-006", "49-173-08-287", "39-354-11-021", "49-231-11-019", "39-364-09-009", "49-032-00-074", "49-042-00-031", "49-022-01-005", "49-022-10-001", "49-043-02-004", "49-114-06-125", "39-353-17-001", "49-042-00-018", "39-344-18-010", "49-054-01-065", "49-083-05-023", "49-031-01-004", "49-122-18-031", "49-083-06-001", "49-021-21-003", "49-012-07-001", "49-021-04-003", "49-262-01-002", "39-343-08-008", "49-271-99-001", "49-021-01-014", "49-104-10-080", "49-172-09-001", "49-022-03-008", "49-071-00-009", "49-054-01-061", "49-012-04-005", "49-024-99-001", "49-234-00-002", "49-012-01-007", "49-084-00-021", "59-021-04-017", "39-354-11-020", "49-043-01-002", "49-232-01-005", "39-334-02-001", "49-191-06-005", "49-034-00-014", "39-363-05-101", "39-342-06-019", "49-171-00-001", "49-011-00-133", "49-111-00-025", "49-331-02-001", "39-343-08-028", "39-352-18-011", "39-363-05-128", "49-042-04-034", "49-334-00-008", "39-354-04-011", "49-031-00-074", "49-131-01-180", "49-281-02-008", "49-121-00-023", "49-041-03-003", "49-111-00-021", "49-022-11-015", "39-363-05-134", "39-331-00-016", "49-103-13-004", "49-353-05-018", "49-173-07-002", "49-031-00-019", "39-364-15-018", "49-082-02-001", "49-024-05-001", "49-022-02-007", "49-012-10-019", "39-342-04-025", "49-043-00-016", "49-031-00-001", "39-293-00-026", "39-363-05-112", "49-082-01-001", "39-353-18-020", "39-354-15-003", "49-172-00-001", "49-112-10-012", "49-083-06-006", "49-021-20-001", "49-012-11-012", "49-031-01-002", "49-143-02-020", "49-033-99-001", "49-231-00-033", "49-084-00-012", "39-354-12-022", "49-031-00-048", "49-343-01-001", "49-144-02-190", "49-084-00-022", "49-143-03-034", "49-111-00-014", "49-081-01-004", "49-234-06-014", "49-174-06-019", "49-171-08-001", "49-281-02-007", "49-171-00-004", "49-034-10-003", "49-173-05-002", "49-014-99-015", "49-042-01-022", "49-031-00-071", "49-343-10-064", "49-164-14-012", "49-043-02-003", "49-014-14-001", "39-364-08-001", "49-353-05-016", "49-031-00-103", "49-022-14-005", "49-083-05-001", "49-331-01-007", "49-031-03-010", "49-174-06-004", "49-302-01-008", "49-171-05-010", "49-171-09-001", "49-171-08-004", "49-191-07-001", "49-083-06-005", "39-353-14-001", "39-353-19-002", "40-014-10-007", "49-022-15-014", "49-311-01-037", "49-173-02-003", "49-041-01-011", "49-334-00-002", "39-363-05-107", "49-114-06-212", "49-144-02-191", "49-014-01-005", "49-272-00-001", "49-233-17-020", "49-014-00-016", "39-344-18-009", "49-114-15-037", "49-084-00-019", "49-062-03-027", "39-333-99-003", "49-084-04-002", "49-141-06-002", "49-144-03-002", "49-031-13-006", "39-334-11-021", "39-363-05-100", "49-014-11-008", "49-131-01-177", "49-061-11-094", "49-083-00-002", "49-141-06-008", "49-354-07-001", "49-084-00-017", "49-043-00-010", "49-353-05-010", "49-012-03-014", "49-023-14-009", "49-131-03-017", "49-014-01-003", "49-172-05-011", "49-141-05-002", "49-343-10-001", "49-104-12-014", "49-164-12-001", "49-122-19-001", "39-343-03-034", "49-121-00-003", "39-334-12-001", "49-344-00-007", "39-352-99-002", "49-121-00-048", "39-344-03-066", "49-141-00-010", "49-031-03-009", "49-061-11-060", "59-022-04-007", "39-363-05-099", "49-022-01-006", "49-084-02-004", "49-023-14-012", "49-012-03-011", "59-021-03-001", "49-211-06-006", "49-043-01-001", "59-021-01-006", "49-023-00-009", "49-172-02-008", "49-044-20-002", "49-172-02-004", "39-354-15-002", "49-023-00-122", "49-144-02-192", "49-213-00-001", "49-173-05-011", "49-022-08-005", "49-262-14-033", "39-353-19-001", "49-213-11-001", "49-353-06-002", "39-333-00-008", "49-172-08-001", "49-084-03-007", "49-081-03-013", "39-342-04-015", "39-344-18-024", "49-112-01-002", "39-343-10-002", "39-343-09-008", "49-141-03-007", "49-081-02-001", "49-031-02-012", "49-041-00-009", "49-081-02-004", "49-353-02-123", "49-132-01-008", "49-043-04-004", "49-022-13-029", "39-333-07-014", "39-343-11-006", "49-033-00-002", "49-021-11-019", "39-333-99-002", "49-173-00-005", "49-083-05-028", "49-083-05-029", "49-343-04-033", "49-194-11-002", "49-043-02-009", "49-353-06-007", "49-043-04-001", "49-262-14-032", "49-121-00-057", "49-211-04-001", "49-263-01-155", "39-343-09-007", "49-231-00-037", "49-234-00-003", "39-354-15-001", "39-283-03-002", "49-011-06-031", "49-113-14-047", "49-083-04-002", "49-114-15-038", "49-103-12-004", "49-084-01-013", "39-344-18-066", "49-104-13-001", "39-364-08-006", "39-334-11-027", "49-022-25-017", "39-363-05-140", "49-262-01-186", "49-083-01-015", "49-084-01-014", "49-012-11-014", "49-083-06-004", "49-171-05-004", "49-032-00-076", "49-122-18-032", "49-214-08-097", "49-172-03-043", "49-231-02-001", "49-141-09-073", "49-124-01-010", "49-083-01-413", "49-173-01-004", "49-082-02-005", "39-344-14-005", "49-111-14-019", "49-043-02-006", "49-021-17-027", "49-042-03-007", "49-032-05-022", "49-034-10-001", "49-034-10-002", "49-081-03-014", "49-043-01-003", "49-172-04-041", "49-172-04-040", "49-172-03-005", "49-172-03-004", "49-172-03-003", "39-342-04-002", "49-081-01-006", "49-132-01-032", "49-132-01-029", "49-043-02-001", "49-141-03-010", "49-083-06-002", "49-132-01-028", "49-132-01-031", "39-324-12-024", "39-352-05-055", "59-021-04-013", "39-333-10-011", "49-083-06-003", "49-121-00-099", "49-041-02-003", "49-104-10-203", "49-243-00-005", "49-224-19-026", "49-114-00-006", "49-141-08-023", "49-084-02-019", "59-024-01-011", "49-262-01-011", "49-103-00-004", "49-044-00-002", "59-021-02-008", "59-021-02-030", "59-021-01-020", "49-042-04-029", "49-014-01-006", "49-083-05-025", "49-131-00-007", "49-082-01-140", "49-131-03-053", "49-144-05-020", "49-143-03-035", "49-142-04-025", "49-123-16-017", "49-063-99-003", "49-114-00-010", "39-342-03-028", "39-333-10-021", "39-332-99-003", "49-043-00-019", "49-031-02-010", "39-333-10-015", "49-141-06-009", "49-353-04-209", "49-141-07-003", "49-142-01-131", "49-034-10-004", "49-054-13-115", "39-333-02-001", "49-043-00-018", "59-021-01-010", "49-162-14-001", "49-032-01-008", "49-112-04-016", "49-354-05-003", "49-173-99-001", "49-011-04-010", "39-343-08-016", "49-124-27-013", "49-233-14-003", "49-131-11-009", "49-043-04-002", "39-364-99-001", "39-331-00-019", "49-043-05-006", "49-353-05-011", "59-021-04-016", "59-021-04-014", "59-022-03-015", "49-231-11-001", "39-353-11-022", "49-083-01-013", "49-012-06-009", "59-024-01-013", "49-233-17-022", "49-114-06-140", "49-012-13-052", "49-082-02-002", "49-233-17-021", "49-231-99-002", "39-343-02-057", "39-343-02-058", "49-021-08-027", "49-191-07-024", "49-081-01-003", "49-174-23-001", "49-164-12-025", "49-083-04-001", "49-271-03-029", "49-171-05-002", "49-141-10-041", "49-142-01-134", "49-153-00-002", "49-081-03-008", "49-141-05-004", "59-021-02-026", "39-352-05-042", "49-014-14-002", "49-142-01-132", "49-013-99-002", "49-012-13-043", "39-321-99-005", "49-042-06-008", "39-314-04-009", "49-222-00-004", "39-344-17-012", "49-014-13-023", "49-173-00-002", "49-272-01-013", "49-063-01-060", "49-024-00-003", "59-021-04-012", "49-044-20-005", "49-084-00-005", "49-142-03-003", "39-363-05-109", "49-233-00-013", "49-141-04-002", "59-021-01-018", "49-041-00-002", "39-334-00-006", "49-141-06-005", "39-344-18-089", "49-173-06-001", "49-084-02-022", "49-124-27-008", "49-124-27-012", "49-013-05-094", "49-292-00-002", "39-353-11-013", "49-101-07-001", "49-272-00-010", "49-081-04-004", "49-203-00-001", "49-102-99-001", "49-061-11-103", "49-131-03-008", "49-042-07-005", "39-341-00-002", "49-061-11-055", "49-342-00-007", "49-301-15-014", "49-062-03-039", "49-013-00-038", "59-021-01-009", "39-363-05-116", "49-114-00-005", "49-233-99-002", "59-021-01-008", "49-131-00-056", "49-043-00-014", "39-313-01-065", "59-021-01-023", "49-221-99-001", "49-141-04-001", "39-333-11-003", "49-141-02-006", "49-043-02-002", "49-084-02-007", "49-081-03-004", "49-274-18-001", "49-234-18-027", "49-084-03-001", "49-354-08-118", "49-044-20-008", "49-101-00-001", "49-011-13-016", "49-032-99-004", "49-011-06-032", "49-232-01-006", "59-021-01-025", "39-334-99-004", "49-042-04-030", "49-043-04-003", "49-031-02-013", "49-042-06-010", "49-124-99-002", "49-173-05-004", "49-211-06-001", "49-044-00-008", "49-043-02-007", "49-043-02-010", "49-113-14-053", "39-314-04-011", "49-033-10-002", "49-033-10-003", "49-242-00-012", "49-121-00-098", "49-081-01-002", "49-141-08-022", "49-012-12-031", "49-033-10-001", "39-334-11-018", "49-141-10-055", "49-021-06-045", "49-132-01-001", "49-141-10-007", "39-293-00-016", "49-043-04-009", "39-313-02-075", "59-021-01-019", "39-364-10-015", "59-021-01-024", "49-011-06-033", "49-041-03-006", "39-323-25-018", "59-024-00-003", "59-022-04-009", "49-354-05-004", "49-062-03-038", "49-062-03-034", "49-113-13-045", "59-021-04-015", "49-131-03-052", "49-041-21-001", "49-172-08-002", "39-363-10-021", "49-081-03-001", "49-151-04-086", "39-363-05-135", "59-022-04-004", "49-133-13-003", "49-141-01-017", "49-012-13-122", "39-354-19-001", "49-243-19-026", "49-142-04-022", "49-021-14-003", "49-084-02-020", "49-021-17-035", "39-324-12-025", "59-021-02-003", "49-081-04-003", "49-272-00-004", "49-083-05-020", "49-084-02-010", "49-032-04-006", "49-354-01-147", "49-084-05-002", "49-141-14-057", "49-012-12-032", "49-353-05-017", "49-141-06-013", "49-141-09-077", "49-141-09-075", "49-141-14-075", "49-021-04-007", "49-141-06-006", "49-084-01-003", "49-121-01-002", "49-011-15-080", "49-284-03-112", "59-021-01-026", "59-021-02-027", "39-363-05-136", "49-104-10-205", "49-231-99-004", "49-012-12-030", "49-171-06-001", "49-172-02-007", "49-262-01-184", "49-354-07-165", "49-032-01-007", "49-142-01-128", "49-022-14-015", "49-141-14-009", "49-243-12-160", "49-141-14-052", "49-084-02-023", "49-141-10-015", "49-083-01-412", "49-141-09-007", "49-074-00-006", "49-111-14-011", "39-334-00-008", "39-333-10-023", "49-141-08-027", "59-024-01-047", "49-062-04-062", "59-024-01-045", "49-232-00-018", "49-202-00-001", "49-084-02-017", "39-354-12-016", "49-084-01-008", "49-021-06-005", "49-141-14-060", "49-052-01-002", "49-084-02-025"];
+
+  function chunkArray(arr, size) {
+    var out = [];
+    for (var i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
   }
 
-  var localFeatureCollection = null; // cached after first fetch, so re-clicking (e.g. after changing the threshold) doesn't re-download 12MB
-
-  function renderLocalBuildingsAtThreshold() {
-    var statusEl = document.getElementById('local-status');
-    var threshold = parseFloat(document.getElementById('threshold-input').value) || 0;
-    var allFeatures = localFeatureCollection.features || [];
-
-    localLayerGroup.clearLayers();
-
-    var addressCounts = {};
-    allFeatures.forEach(function (f) {
-      var addr = ((f.properties && f.properties.PRPADDRESS) || '').trim();
-      addressCounts[addr] = (addressCounts[addr] || 0) + 1;
+  // Runs automatically on page load — no button, no toggle. Fetches quietly in the
+  // background and drops the confirmed-building dots onto the map as soon as they're in.
+  function loadConfirmedBuildings() {
+    if (confirmedLoaded) return;
+    var batches = chunkArray(CONFIRMED_PINS, 100);
+    var matched = 0;
+    Promise.all(batches.map(function (batch) {
+      var whereIn = batch.map(function (p) { return "'" + String(p).replace(/'/g, "''") + "'"; }).join(',');
+      return jeffcoQuery({
+        where: 'PIN IN (' + whereIn + ')',
+        outFields: 'PIN,PRPADDRESS,STTGRSAREA',
+        returnGeometry: 'true', outSR: '4326', resultRecordCount: '200', f: 'json'
+      }).catch(function () { return null; });
+    })).then(function (results) {
+      results.forEach(function (data) {
+        if (!data || !data.features) return;
+        data.features.forEach(function (f) {
+          var attrs = f.attributes;
+          if (!f.geometry || !f.geometry.rings || !f.geometry.rings.length) return;
+          var latlngs = ringToLatLngs(f.geometry.rings[0]);
+          var c = centroidOf(latlngs);
+          var dot = L.circleMarker([c.lat, c.lng], {
+            radius: 5, color: '#A6006B', weight: 1.5, fillColor: '#FF2FB0', fillOpacity: 0.95
+          });
+          dot.bindPopup(
+            '<strong>Already confirmed</strong><br>' + (attrs.PRPADDRESS || '(no address on file)') +
+            '<br>PIN ' + attrs.PIN + (attrs.STTGRSAREA ? ' · ' + Math.round(attrs.STTGRSAREA).toLocaleString() + ' sq ft on file' : '') +
+            '<br><span style="color:var(--ink-faint);">From Ken &amp; Myles\' verification list — already on the sandbox map.</span>'
+          );
+          confirmedDots.push({ layer: dot, quadrant: getQuadrantForLatLng(c.lat, c.lng) });
+          matched++;
+        });
+      });
+      confirmedLoaded = true;
+      confirmedGroup.addTo(map);
+      applyQuadrantFilterToConfirmed();
+      var missed = CONFIRMED_PINS.length - matched;
+      if (missed > 0) console.warn(missed + ' confirmed PIN(s) did not match a current Jeffco parcel.');
+    }).catch(function (err) {
+      console.warn('Confirmed-buildings load failed:', err);
     });
-
-    var shown = 0, skippedNoGeometry = 0;
-    allFeatures.forEach(function (f) {
-      var sqft = (f.properties && f.properties.STTGRSAREA) || 0;
-      if (sqft < threshold) return;
-      var latlngs = geojsonCoordsToLatLngs(f.geometry);
-      if (!latlngs) { skippedNoGeometry++; return; }
-      renderCandidateBuilding(latlngs, f.properties || {}, localLayerGroup, addressCounts, true);
-      shown++;
-    });
-
-    var note = skippedNoGeometry ? (' (' + skippedNoGeometry + ' skipped — no usable geometry)') : '';
-    statusEl.textContent = shown.toLocaleString() + ' of ' + allFeatures.length.toLocaleString() +
-      ' buildings in the file are at or above ' + threshold.toLocaleString() + ' sq ft and are now on the map' +
-      note + '. Click one for details — the full assessor record loads on first click. Change the threshold and click the button again to refresh.';
   }
 
-  function loadLocalBuildings() {
-    var btn = document.getElementById('load-local-btn');
-    var statusEl = document.getElementById('local-status');
 
-    if (localBuildingsLoaded) {
-      renderLocalBuildingsAtThreshold();
+  // ---------- Municipal zoning — City of Lakewood (Title 17, Lakewood Municipal Code) ----------
+  // Source: City of Lakewood's own public, hosted ArcGIS Feature Service (CORS-open, no key needed).
+  var ZONING_URL = 'https://services.arcgis.com/PFikmPaTMlt2KX1O/arcgis/rest/services/Zoning/FeatureServer/0/query';
+  var ZONE_TYPE_COLORS = {
+    'RESIDENTIAL': '#C9A24B',
+    'COMMERCIAL': '#3D6B62',
+    'OFFICE': '#5B7FA6',
+    'INDUSTRIAL': '#8B5E3C',
+    'MIXED USE': '#A2637A',
+    'PARK OPEN SPACE': '#5E8C4B',
+    'OTHER PD': '#8A8A8A',
+    '': '#B7B7B7'
+  };
+  function zoneColor(zoneType) { return ZONE_TYPE_COLORS[zoneType || ''] || '#B7B7B7'; }
+
+  function buildZoningLegend() {
+    var el = document.getElementById('zoning-legend');
+    var rows = Object.keys(ZONE_TYPE_COLORS).map(function (k) {
+      var label = k || 'Unclassified';
+      return '<div style="display:flex; align-items:center; gap:6px; margin-top:2px;">' +
+        '<span style="width:11px; height:11px; border-radius:2px; background:' + ZONE_TYPE_COLORS[k] + '; display:inline-block; flex-shrink:0;"></span>' +
+        '<span>' + label.charAt(0) + label.slice(1).toLowerCase() + '</span></div>';
+    });
+    el.innerHTML = rows.join('');
+    el.style.display = '';
+  }
+
+  function loadZoningLayer() {
+    var btn = document.getElementById('zoning-btn');
+    var statusEl = document.getElementById('zoning-status');
+    if (zoningLoaded) {
+      var showing = !map.hasLayer(zoningGroup);
+      if (showing) { zoningGroup.addTo(map); btn.textContent = 'Hide zoning districts'; document.getElementById('zoning-legend').style.display = ''; }
+      else { map.removeLayer(zoningGroup); btn.textContent = 'Show zoning districts'; document.getElementById('zoning-legend').style.display = 'none'; }
       return;
     }
-
     btn.disabled = true;
-    statusEl.textContent = 'Loading buildings.geojson…';
-
-    fetch('buildings.geojson')
-      .then(function (r) {
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        return r.json();
-      })
+    statusEl.textContent = 'Loading zoning districts…';
+    var params = new URLSearchParams({
+      where: '1=1', outFields: 'ZONING,ZONE_TYPE,ZONING_DESCRIPTION', returnGeometry: 'true',
+      outSR: '4326', f: 'json'
+    });
+    fetch(ZONING_URL + '?' + params.toString())
+      .then(function (r) { return r.json(); })
       .then(function (data) {
-        var featureCollection;
-        if (data && data.type === 'Topology') {
-          if (typeof topojson === 'undefined') throw new Error('topojson-client did not load');
-          var objectKey = Object.keys(data.objects || {})[0];
-          if (!objectKey) throw new Error('no objects found in TopoJSON file');
-          featureCollection = topojson.feature(data, data.objects[objectKey]);
-        } else if (data && data.type === 'FeatureCollection') {
-          featureCollection = data;
-        } else {
-          throw new Error('unrecognized file format (expected TopoJSON or GeoJSON)');
-        }
-
-        localFeatureCollection = featureCollection;
-        localBuildingsLoaded = true;
+        if (data && data.error) throw new Error(data.error.message || 'zoning query error');
+        var features = (data && data.features) || [];
+        features.forEach(function (f) {
+          if (!f.geometry || !f.geometry.rings || !f.geometry.rings.length) return;
+          var rings = f.geometry.rings.map(ringToLatLngs);
+          var color = zoneColor(f.attributes.ZONE_TYPE);
+          var poly = L.polygon(rings.map(function (r) { return r.map(function (p) { return [p.lat, p.lng]; }); }), {
+            color: color, weight: 1, fillColor: color, fillOpacity: 0.22
+          }).addTo(zoningGroup);
+          poly.bindPopup(
+            '<strong>' + (f.attributes.ZONING || 'Unclassified') + '</strong>' +
+            (f.attributes.ZONING_DESCRIPTION ? '<br>' + f.attributes.ZONING_DESCRIPTION : '') +
+            (f.attributes.ZONE_TYPE ? '<br><span style="color:var(--ink-faint);">' + f.attributes.ZONE_TYPE + '</span>' : '')
+          );
+        });
+        zoningLoaded = true;
         btn.disabled = false;
-        btn.textContent = 'Refresh from buildings.geojson';
-        renderLocalBuildingsAtThreshold();
+        zoningGroup.addTo(map);
+        btn.textContent = 'Hide zoning districts';
+        buildZoningLegend();
+        statusEl.textContent = features.length.toLocaleString() + ' zoning districts loaded.';
       })
       .catch(function (err) {
         btn.disabled = false;
-        statusEl.textContent = 'Could not load buildings.geojson (' + (err && err.message ? err.message : 'unknown error') +
-          '). Make sure it sits next to index.html and this page is served over http/https, not opened as a local file.';
+        statusEl.textContent = 'Load failed (' + (err && err.message ? err.message : 'network issue') + ') — try again.';
       });
   }
 
-  document.getElementById('load-local-btn').addEventListener('click', loadLocalBuildings);
+  document.getElementById('zoning-btn').addEventListener('click', loadZoningLayer);
 
   initMap();
-  tryLoadCachedBoundaries();
+  renderQuadrants();
   updateDrawStatus();
+  loadConfirmedBuildings();
 })();
 </script>
 </body>
