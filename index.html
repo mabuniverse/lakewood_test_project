@@ -109,9 +109,10 @@
     cursor: grab;
   }
 
-  #boundary-status, #scan-status {
+  #boundary-status, #scan-status, #confirmed-status {
     font-size: 12.5px; color: var(--ink-soft); margin-bottom: 10px; line-height: 1.5;
   }
+  #confirmed-status.status-error { color: var(--accent-ink); }
   .legend-swatches { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
   .legend-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
   .legend-dot { width: 12px; height: 12px; border-radius: 3px; flex: none; }
@@ -136,6 +137,16 @@
   }
   .popup-flagged { font-size: 12.5px; line-height: 1.5; }
   .popup-flagged button.btn { margin-top: 6px; width: 100%; font-size: 12px; padding: 6px 8px; }
+
+  .grid-check-icon { background: none; border: none; }
+  .grid-check-box {
+    width: 16px; height: 16px; box-sizing: border-box; border-radius: 3px;
+    background: #fff; border: 1.5px solid #A6006B; cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,.45);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; line-height: 1; color: #A6006B;
+  }
+  .grid-check-box.checked { background: #FF2FB0; border-color: #A6006B; color: #fff; }
 </style>
 </head>
 <body>
@@ -178,6 +189,8 @@
           <div class="legend-row"><span class="legend-dot" style="background:#3355CC;"></span>Blue (NE) <span class="who">&mdash; Myles</span></div>
           <div class="legend-row"><span class="legend-dot" style="background:#2E9E4E;"></span>Green (NW) <span class="who">&mdash; Kylie</span></div>
         </div>
+        <div id="confirmed-status" style="margin-top:8px; display:none;"></div>
+        <div id="grid-status" style="margin-top:8px; display:none;"></div>
       </div>
 
       <div class="panel">
@@ -271,6 +284,11 @@
   var boundaryGroup = null;
   var selectedQuadrant = 'ALL';
   var confirmedDots = []; // { layer, quadrant } — every confirmed-building dot, for quadrant filtering
+  var gridGroup = null;
+  var checkedCells = {}; // cellKey -> true, persisted to localStorage
+  var currentGridQuadrant = null;
+  var currentGridTotal = 0;
+  var CHECKED_CELLS_KEY = 'lakewood-footprint-tool-grid-checked-v1';
   var scanGroup = null;
   var lastFootprintSqft = 0;
   var currentAssessorMatch = null; // Jeffco attributes matched to the current trace, if any
@@ -422,6 +440,7 @@
     scanGroup = L.layerGroup().addTo(map);
     confirmedGroup = L.layerGroup();
     zoningGroup = L.layerGroup();
+    gridGroup = L.layerGroup(); // coverage grid — only shown once a specific section is picked
 
     loadLog();
     renderLog();
@@ -507,10 +526,37 @@
   }
 
   // ---------- Auto-pull the full assessor record for the traced location ----------
+  // Proper area-weighted polygon centroid (shoelace-based) — NOT a naive average of the vertices.
+  // A naive average skews hard toward whichever edge of a parcel was digitized with more points
+  // (very common in cadastral data — one boundary following a curved road with many vertices,
+  // the opposite straight property line with just two), which was pulling confirmed-building
+  // dots and other centroid-based lookups off to one side of the parcel, sometimes clean outside
+  // an L-shaped or irregular one. This formula gives the true geometric center regardless of how
+  // densely each edge was digitized.
   function centroidOf(latlngs) {
-    var sumLat = 0, sumLng = 0;
-    latlngs.forEach(function (p) { sumLat += p.lat; sumLng += p.lng; });
-    return { lat: sumLat / latlngs.length, lng: sumLng / latlngs.length };
+    var n = latlngs.length;
+    if (n === 0) return { lat: 0, lng: 0 };
+    if (n < 3) {
+      var s1Lat = 0, s1Lng = 0;
+      latlngs.forEach(function (p) { s1Lat += p.lat; s1Lng += p.lng; });
+      return { lat: s1Lat / n, lng: s1Lng / n };
+    }
+    var twiceArea = 0, cLat = 0, cLng = 0;
+    for (var i = 0; i < n; i++) {
+      var p1 = latlngs[i], p2 = latlngs[(i + 1) % n];
+      var cross = p1.lng * p2.lat - p2.lng * p1.lat;
+      twiceArea += cross;
+      cLng += (p1.lng + p2.lng) * cross;
+      cLat += (p1.lat + p2.lat) * cross;
+    }
+    if (Math.abs(twiceArea) < 1e-12) {
+      // degenerate (zero-area / collinear) ring — fall back to a plain average rather than /0
+      var s2Lat = 0, s2Lng = 0;
+      latlngs.forEach(function (p) { s2Lat += p.lat; s2Lng += p.lng; });
+      return { lat: s2Lat / n, lng: s2Lng / n };
+    }
+    var factor = 1 / (3 * twiceArea);
+    return { lat: cLat * factor, lng: cLng * factor };
   }
 
   // A bare point-intersects query misses whenever the trace's centroid lands just outside the
@@ -1148,6 +1194,117 @@
     });
   }
 
+  // ---------- Coverage grid: small gapless checklist tiles, one section at a time ----------
+  // A fixed, citywide grid (so cells line up the same way no matter which section is picked),
+  // filtered down to whichever section is currently selected. Cells are sized well under the
+  // scan feature's own "zoom in more" cutoff (~4km view diagonal) so one "Scan current view" pass
+  // comfortably covers a cell. Each cell gets a tiny checkbox marker at its center — click that
+  // to check it off — while the cell's own colored wash is non-interactive (interactive:false),
+  // so it never blocks a left-click from reaching a scan outline's popup or the map underneath
+  // for tracing. Entirely hidden in "All" view.
+  var GRID_ORIGIN = { lat: 39.6184, lng: -105.199 }; // matches the real Lakewood boundary's SW corner
+  var GRID_STEP_LAT = 0.0045;   // ~500m
+  var GRID_STEP_LNG = 0.00584;  // ~500m at this latitude
+  var GRID_CITY_BOUNDS = { latMin: 39.6184, latMax: 39.7613, lngMin: -105.199, lngMax: -105.0532 };
+  var GRID_STROKE = 'rgba(20,20,20,0.55)'; // neutral outline, readable over every section color
+  var GRID_FILL = '#FF8FC7';    // light pink wash — deliberately distinct from every section's own color
+  var GRID_FILL_OPACITY = 0.32;
+
+  function loadCheckedCells() {
+    try {
+      var raw = localStorage.getItem(CHECKED_CELLS_KEY);
+      checkedCells = raw ? (JSON.parse(raw) || {}) : {};
+    } catch (e) { checkedCells = {}; }
+  }
+  function saveCheckedCells() {
+    try { localStorage.setItem(CHECKED_CELLS_KEY, JSON.stringify(checkedCells)); } catch (e) {}
+  }
+
+  function updateGridStatus() {
+    var statusEl = document.getElementById('grid-status');
+    if (!currentGridQuadrant) { statusEl.style.display = 'none'; return; }
+    var prefix = currentGridQuadrant + '_';
+    var checkedCount = 0;
+    Object.keys(checkedCells).forEach(function (k) {
+      if (checkedCells[k] && k.indexOf(prefix) === 0) checkedCount++;
+    });
+    statusEl.style.display = '';
+    statusEl.innerHTML = '<strong>' + checkedCount + ' / ' + currentGridTotal + '</strong> coverage cells checked off. ' +
+      'Click the small checkbox in a cell once you\'ve swept it — its pink wash clears so it\'s obvious what\'s left. ' +
+      'Left-click and scan-outline popups still work normally everywhere else in the cell.';
+  }
+
+  function gridCheckIcon(checked) {
+    return L.divIcon({
+      className: 'grid-check-icon',
+      html: '<div class="grid-check-box' + (checked ? ' checked' : '') + '">' + (checked ? '&#10003;' : '') + '</div>',
+      iconSize: [16, 16], iconAnchor: [8, 8]
+    });
+  }
+
+  function addGridCell(south, north, west, east, key, name) {
+    var checked = !!checkedCells[key];
+    var rect = L.rectangle([[south, west], [north, east]], {
+      color: GRID_STROKE, weight: 1, opacity: 0.5,
+      fillColor: GRID_FILL, fillOpacity: checked ? 0 : GRID_FILL_OPACITY,
+      interactive: false // never intercepts clicks — tracing and scan-outline popups pass straight through
+    });
+    gridGroup.addLayer(rect);
+
+    var center = rect.getBounds().getCenter();
+    var check = L.marker(center, { icon: gridCheckIcon(checked), keyboard: false });
+    check.on('click', function (e) {
+      L.DomEvent.stopPropagation(e);
+      checkedCells[key] = !checkedCells[key];
+      saveCheckedCells();
+      rect.setStyle({ fillOpacity: checkedCells[key] ? 0 : GRID_FILL_OPACITY });
+      check.setIcon(gridCheckIcon(checkedCells[key]));
+      updateGridStatus();
+    });
+    gridGroup.addLayer(check);
+  }
+
+  // Testing only a cell's center point left real gaps along a section's boundary: any cell whose
+  // center happened to fall just outside the (often jagged/curved) real city-limit line got
+  // skipped entirely, even when most of that cell was still inside the section. Sampling the
+  // center, all four corners, and the four edge midpoints catches those — a cell is included if
+  // ANY of the nine points is inside, so coverage now follows the boundary far more closely.
+  function cellTouchesQuadrant(south, north, west, east, name) {
+    var cLat = (south + north) / 2, cLng = (west + east) / 2;
+    var points = [
+      [cLat, cLng], [south, west], [south, east], [north, west], [north, east],
+      [south, cLng], [north, cLng], [cLat, west], [cLat, east]
+    ];
+    for (var i = 0; i < points.length; i++) {
+      if (pointInQuadrant(points[i][0], points[i][1], name)) return true;
+    }
+    return false;
+  }
+
+  function buildGridForQuadrant(name) {
+    gridGroup.clearLayers();
+    var b = GRID_CITY_BOUNDS;
+    var rowStart = Math.floor((b.latMin - GRID_ORIGIN.lat) / GRID_STEP_LAT);
+    var rowEnd = Math.ceil((b.latMax - GRID_ORIGIN.lat) / GRID_STEP_LAT);
+    var colStart = Math.floor((b.lngMin - GRID_ORIGIN.lng) / GRID_STEP_LNG);
+    var colEnd = Math.ceil((b.lngMax - GRID_ORIGIN.lng) / GRID_STEP_LNG);
+    var total = 0;
+    for (var row = rowStart; row <= rowEnd; row++) {
+      for (var col = colStart; col <= colEnd; col++) {
+        var south = GRID_ORIGIN.lat + row * GRID_STEP_LAT;
+        var north = south + GRID_STEP_LAT;
+        var west = GRID_ORIGIN.lng + col * GRID_STEP_LNG;
+        var east = west + GRID_STEP_LNG;
+        if (!cellTouchesQuadrant(south, north, west, east, name)) continue;
+        addGridCell(south, north, west, east, name + '_' + row + '_' + col, name);
+        total++;
+      }
+    }
+    currentGridQuadrant = name;
+    currentGridTotal = total;
+    updateGridStatus();
+  }
+
   function selectQuadrant(name) {
     selectedQuadrant = name;
     renderQuadrants();
@@ -1155,6 +1312,15 @@
     document.querySelectorAll('#quad-select-row .quad-btn').forEach(function (btn) {
       btn.classList.toggle('active', btn.getAttribute('data-quad') === name);
     });
+    if (name === 'ALL') {
+      gridGroup.clearLayers();
+      if (map.hasLayer(gridGroup)) map.removeLayer(gridGroup);
+      currentGridQuadrant = null;
+      updateGridStatus();
+    } else {
+      buildGridForQuadrant(name);
+      gridGroup.addTo(map);
+    }
   }
 
   document.querySelectorAll('#quad-select-row .quad-btn').forEach(function (btn) {
@@ -1343,52 +1509,170 @@
   // for multi-building parcels). Embedded directly so this works with no extra file to host.
   var CONFIRMED_PINS = ["49-341-00-001", "49-294-00-001", "49-241-17-002", "59-032-00-003", "49-243-00-010", "49-344-08-044", "39-352-03-034", "59-041-00-010", "49-353-00-009", "59-032-00-009", "49-134-06-010", "49-241-20-002", "59-041-00-002", "49-134-06-009", "59-032-00-007", "59-041-00-004", "39-364-06-158", "49-261-03-001", "49-084-00-034", "49-084-00-036", "49-062-04-043", "49-352-01-001", "49-173-07-013", "49-022-01-002", "39-354-20-001", "39-322-16-001", "49-152-02-107", "49-354-07-169", "49-334-00-005", "59-024-01-014", "49-021-11-010", "49-104-10-202", "39-333-01-001", "39-343-01-019", "49-131-03-045", "49-151-99-002", "49-083-00-012", "39-364-06-077", "49-054-13-114", "49-054-13-034", "49-044-17-002", "49-042-02-005", "49-031-00-076", "49-112-12-033", "49-141-09-002", "49-234-00-007", "49-023-00-032", "49-023-00-031", "49-252-03-106", "49-082-07-311", "49-083-05-026", "49-141-14-008", "49-351-01-018", "49-141-05-003", "49-033-00-009", "49-143-02-001", "49-081-04-008", "49-171-07-002", "49-014-13-022", "49-353-06-003", "49-021-05-006", "39-342-06-009", "49-054-12-007", "49-343-10-067", "49-083-01-411", "49-212-13-001", "49-084-02-003", "59-022-04-010", "49-023-00-034", "49-012-04-004", "49-062-04-045", "49-194-09-013", "49-282-02-002", "49-044-20-006", "49-031-00-014", "49-083-00-013", "49-083-06-007", "49-084-00-020", "49-352-02-001", "49-113-13-004", "49-113-13-026", "49-113-13-027", "39-293-00-029", "49-141-11-035", "49-242-00-009", "39-331-00-017", "49-081-04-001", "49-353-05-009", "49-023-00-022", "49-353-05-004", "49-081-04-002", "39-353-15-007", "39-354-04-003", "49-081-02-002", "39-331-13-003", "49-084-00-011", "49-142-04-028", "39-342-05-017", "39-344-18-005", "49-021-02-009", "49-331-01-002", "39-364-12-008", "49-084-02-002", "49-233-17-009", "49-114-06-136", "49-011-00-132", "39-363-06-001", "49-022-01-007", "39-363-05-111", "49-284-03-081", "49-033-14-024", "49-131-99-003", "49-142-03-002", "59-022-03-016", "49-012-13-051", "39-342-06-026", "49-022-11-012", "49-231-01-093", "49-012-13-003", "49-012-13-111", "49-334-03-001", "49-353-06-006", "49-123-21-007", "49-023-14-003", "49-043-00-001", "39-342-07-007", "49-022-14-008", "49-042-99-007", "39-353-00-016", "49-144-02-189", "49-031-00-028", "49-012-12-026", "49-081-03-012", "49-131-99-001", "39-363-05-141", "49-082-02-006", "39-364-03-014", "49-231-00-031", "49-043-02-005", "49-021-10-018", "49-023-14-007", "49-141-01-016", "39-343-02-054", "49-274-16-016", "49-262-00-004", "39-343-02-056", "49-084-06-001", "49-014-00-002", "49-172-03-007", "39-353-17-002", "49-103-12-002", "59-012-00-012", "49-354-06-001", "49-012-03-012", "49-124-23-004", "49-031-00-012", "39-351-00-063", "39-351-00-064", "39-353-99-013", "39-353-99-011", "49-033-01-001", "39-354-12-020", "49-062-03-040", "49-083-00-014", "49-141-10-039", "49-114-06-122", "49-042-04-001", "49-011-18-001", "49-272-99-002", "39-364-03-016", "49-354-07-164", "49-343-10-063", "49-014-00-017", "49-024-04-001", "49-024-04-002", "49-041-20-001", "39-342-06-017", "49-214-05-001", "49-141-14-151", "49-331-01-003", "49-214-04-001", "49-242-00-006", "49-173-08-287", "39-354-11-021", "49-231-11-019", "39-364-09-009", "49-032-00-074", "49-042-00-031", "49-022-01-005", "49-022-10-001", "49-043-02-004", "49-114-06-125", "39-353-17-001", "49-042-00-018", "39-344-18-010", "49-054-01-065", "49-083-05-023", "49-031-01-004", "49-122-18-031", "49-083-06-001", "49-021-21-003", "49-012-07-001", "49-021-04-003", "49-262-01-002", "39-343-08-008", "49-271-99-001", "49-021-01-014", "49-104-10-080", "49-172-09-001", "49-022-03-008", "49-071-00-009", "49-054-01-061", "49-012-04-005", "49-024-99-001", "49-234-00-002", "49-012-01-007", "49-084-00-021", "59-021-04-017", "39-354-11-020", "49-043-01-002", "49-232-01-005", "39-334-02-001", "49-191-06-005", "49-034-00-014", "39-363-05-101", "39-342-06-019", "49-171-00-001", "49-011-00-133", "49-111-00-025", "49-331-02-001", "39-343-08-028", "39-352-18-011", "39-363-05-128", "49-042-04-034", "49-334-00-008", "39-354-04-011", "49-031-00-074", "49-131-01-180", "49-281-02-008", "49-121-00-023", "49-041-03-003", "49-111-00-021", "49-022-11-015", "39-363-05-134", "39-331-00-016", "49-103-13-004", "49-353-05-018", "49-173-07-002", "49-031-00-019", "39-364-15-018", "49-082-02-001", "49-024-05-001", "49-022-02-007", "49-012-10-019", "39-342-04-025", "49-043-00-016", "49-031-00-001", "39-293-00-026", "39-363-05-112", "49-082-01-001", "39-353-18-020", "39-354-15-003", "49-172-00-001", "49-112-10-012", "49-083-06-006", "49-021-20-001", "49-012-11-012", "49-031-01-002", "49-143-02-020", "49-033-99-001", "49-231-00-033", "49-084-00-012", "39-354-12-022", "49-031-00-048", "49-343-01-001", "49-144-02-190", "49-084-00-022", "49-143-03-034", "49-111-00-014", "49-081-01-004", "49-234-06-014", "49-174-06-019", "49-171-08-001", "49-281-02-007", "49-171-00-004", "49-034-10-003", "49-173-05-002", "49-014-99-015", "49-042-01-022", "49-031-00-071", "49-343-10-064", "49-164-14-012", "49-043-02-003", "49-014-14-001", "39-364-08-001", "49-353-05-016", "49-031-00-103", "49-022-14-005", "49-083-05-001", "49-331-01-007", "49-031-03-010", "49-174-06-004", "49-302-01-008", "49-171-05-010", "49-171-09-001", "49-171-08-004", "49-191-07-001", "49-083-06-005", "39-353-14-001", "39-353-19-002", "40-014-10-007", "49-022-15-014", "49-311-01-037", "49-173-02-003", "49-041-01-011", "49-334-00-002", "39-363-05-107", "49-114-06-212", "49-144-02-191", "49-014-01-005", "49-272-00-001", "49-233-17-020", "49-014-00-016", "39-344-18-009", "49-114-15-037", "49-084-00-019", "49-062-03-027", "39-333-99-003", "49-084-04-002", "49-141-06-002", "49-144-03-002", "49-031-13-006", "39-334-11-021", "39-363-05-100", "49-014-11-008", "49-131-01-177", "49-061-11-094", "49-083-00-002", "49-141-06-008", "49-354-07-001", "49-084-00-017", "49-043-00-010", "49-353-05-010", "49-012-03-014", "49-023-14-009", "49-131-03-017", "49-014-01-003", "49-172-05-011", "49-141-05-002", "49-343-10-001", "49-104-12-014", "49-164-12-001", "49-122-19-001", "39-343-03-034", "49-121-00-003", "39-334-12-001", "49-344-00-007", "39-352-99-002", "49-121-00-048", "39-344-03-066", "49-141-00-010", "49-031-03-009", "49-061-11-060", "59-022-04-007", "39-363-05-099", "49-022-01-006", "49-084-02-004", "49-023-14-012", "49-012-03-011", "59-021-03-001", "49-211-06-006", "49-043-01-001", "59-021-01-006", "49-023-00-009", "49-172-02-008", "49-044-20-002", "49-172-02-004", "39-354-15-002", "49-023-00-122", "49-144-02-192", "49-213-00-001", "49-173-05-011", "49-022-08-005", "49-262-14-033", "39-353-19-001", "49-213-11-001", "49-353-06-002", "39-333-00-008", "49-172-08-001", "49-084-03-007", "49-081-03-013", "39-342-04-015", "39-344-18-024", "49-112-01-002", "39-343-10-002", "39-343-09-008", "49-141-03-007", "49-081-02-001", "49-031-02-012", "49-041-00-009", "49-081-02-004", "49-353-02-123", "49-132-01-008", "49-043-04-004", "49-022-13-029", "39-333-07-014", "39-343-11-006", "49-033-00-002", "49-021-11-019", "39-333-99-002", "49-173-00-005", "49-083-05-028", "49-083-05-029", "49-343-04-033", "49-194-11-002", "49-043-02-009", "49-353-06-007", "49-043-04-001", "49-262-14-032", "49-121-00-057", "49-211-04-001", "49-263-01-155", "39-343-09-007", "49-231-00-037", "49-234-00-003", "39-354-15-001", "39-283-03-002", "49-011-06-031", "49-113-14-047", "49-083-04-002", "49-114-15-038", "49-103-12-004", "49-084-01-013", "39-344-18-066", "49-104-13-001", "39-364-08-006", "39-334-11-027", "49-022-25-017", "39-363-05-140", "49-262-01-186", "49-083-01-015", "49-084-01-014", "49-012-11-014", "49-083-06-004", "49-171-05-004", "49-032-00-076", "49-122-18-032", "49-214-08-097", "49-172-03-043", "49-231-02-001", "49-141-09-073", "49-124-01-010", "49-083-01-413", "49-173-01-004", "49-082-02-005", "39-344-14-005", "49-111-14-019", "49-043-02-006", "49-021-17-027", "49-042-03-007", "49-032-05-022", "49-034-10-001", "49-034-10-002", "49-081-03-014", "49-043-01-003", "49-172-04-041", "49-172-04-040", "49-172-03-005", "49-172-03-004", "49-172-03-003", "39-342-04-002", "49-081-01-006", "49-132-01-032", "49-132-01-029", "49-043-02-001", "49-141-03-010", "49-083-06-002", "49-132-01-028", "49-132-01-031", "39-324-12-024", "39-352-05-055", "59-021-04-013", "39-333-10-011", "49-083-06-003", "49-121-00-099", "49-041-02-003", "49-104-10-203", "49-243-00-005", "49-224-19-026", "49-114-00-006", "49-141-08-023", "49-084-02-019", "59-024-01-011", "49-262-01-011", "49-103-00-004", "49-044-00-002", "59-021-02-008", "59-021-02-030", "59-021-01-020", "49-042-04-029", "49-014-01-006", "49-083-05-025", "49-131-00-007", "49-082-01-140", "49-131-03-053", "49-144-05-020", "49-143-03-035", "49-142-04-025", "49-123-16-017", "49-063-99-003", "49-114-00-010", "39-342-03-028", "39-333-10-021", "39-332-99-003", "49-043-00-019", "49-031-02-010", "39-333-10-015", "49-141-06-009", "49-353-04-209", "49-141-07-003", "49-142-01-131", "49-034-10-004", "49-054-13-115", "39-333-02-001", "49-043-00-018", "59-021-01-010", "49-162-14-001", "49-032-01-008", "49-112-04-016", "49-354-05-003", "49-173-99-001", "49-011-04-010", "39-343-08-016", "49-124-27-013", "49-233-14-003", "49-131-11-009", "49-043-04-002", "39-364-99-001", "39-331-00-019", "49-043-05-006", "49-353-05-011", "59-021-04-016", "59-021-04-014", "59-022-03-015", "49-231-11-001", "39-353-11-022", "49-083-01-013", "49-012-06-009", "59-024-01-013", "49-233-17-022", "49-114-06-140", "49-012-13-052", "49-082-02-002", "49-233-17-021", "49-231-99-002", "39-343-02-057", "39-343-02-058", "49-021-08-027", "49-191-07-024", "49-081-01-003", "49-174-23-001", "49-164-12-025", "49-083-04-001", "49-271-03-029", "49-171-05-002", "49-141-10-041", "49-142-01-134", "49-153-00-002", "49-081-03-008", "49-141-05-004", "59-021-02-026", "39-352-05-042", "49-014-14-002", "49-142-01-132", "49-013-99-002", "49-012-13-043", "39-321-99-005", "49-042-06-008", "39-314-04-009", "49-222-00-004", "39-344-17-012", "49-014-13-023", "49-173-00-002", "49-272-01-013", "49-063-01-060", "49-024-00-003", "59-021-04-012", "49-044-20-005", "49-084-00-005", "49-142-03-003", "39-363-05-109", "49-233-00-013", "49-141-04-002", "59-021-01-018", "49-041-00-002", "39-334-00-006", "49-141-06-005", "39-344-18-089", "49-173-06-001", "49-084-02-022", "49-124-27-008", "49-124-27-012", "49-013-05-094", "49-292-00-002", "39-353-11-013", "49-101-07-001", "49-272-00-010", "49-081-04-004", "49-203-00-001", "49-102-99-001", "49-061-11-103", "49-131-03-008", "49-042-07-005", "39-341-00-002", "49-061-11-055", "49-342-00-007", "49-301-15-014", "49-062-03-039", "49-013-00-038", "59-021-01-009", "39-363-05-116", "49-114-00-005", "49-233-99-002", "59-021-01-008", "49-131-00-056", "49-043-00-014", "39-313-01-065", "59-021-01-023", "49-221-99-001", "49-141-04-001", "39-333-11-003", "49-141-02-006", "49-043-02-002", "49-084-02-007", "49-081-03-004", "49-274-18-001", "49-234-18-027", "49-084-03-001", "49-354-08-118", "49-044-20-008", "49-101-00-001", "49-011-13-016", "49-032-99-004", "49-011-06-032", "49-232-01-006", "59-021-01-025", "39-334-99-004", "49-042-04-030", "49-043-04-003", "49-031-02-013", "49-042-06-010", "49-124-99-002", "49-173-05-004", "49-211-06-001", "49-044-00-008", "49-043-02-007", "49-043-02-010", "49-113-14-053", "39-314-04-011", "49-033-10-002", "49-033-10-003", "49-242-00-012", "49-121-00-098", "49-081-01-002", "49-141-08-022", "49-012-12-031", "49-033-10-001", "39-334-11-018", "49-141-10-055", "49-021-06-045", "49-132-01-001", "49-141-10-007", "39-293-00-016", "49-043-04-009", "39-313-02-075", "59-021-01-019", "39-364-10-015", "59-021-01-024", "49-011-06-033", "49-041-03-006", "39-323-25-018", "59-024-00-003", "59-022-04-009", "49-354-05-004", "49-062-03-038", "49-062-03-034", "49-113-13-045", "59-021-04-015", "49-131-03-052", "49-041-21-001", "49-172-08-002", "39-363-10-021", "49-081-03-001", "49-151-04-086", "39-363-05-135", "59-022-04-004", "49-133-13-003", "49-141-01-017", "49-012-13-122", "39-354-19-001", "49-243-19-026", "49-142-04-022", "49-021-14-003", "49-084-02-020", "49-021-17-035", "39-324-12-025", "59-021-02-003", "49-081-04-003", "49-272-00-004", "49-083-05-020", "49-084-02-010", "49-032-04-006", "49-354-01-147", "49-084-05-002", "49-141-14-057", "49-012-12-032", "49-353-05-017", "49-141-06-013", "49-141-09-077", "49-141-09-075", "49-141-14-075", "49-021-04-007", "49-141-06-006", "49-084-01-003", "49-121-01-002", "49-011-15-080", "49-284-03-112", "59-021-01-026", "59-021-02-027", "39-363-05-136", "49-104-10-205", "49-231-99-004", "49-012-12-030", "49-171-06-001", "49-172-02-007", "49-262-01-184", "49-354-07-165", "49-032-01-007", "49-142-01-128", "49-022-14-015", "49-141-14-009", "49-243-12-160", "49-141-14-052", "49-084-02-023", "49-141-10-015", "49-083-01-412", "49-141-09-007", "49-074-00-006", "49-111-14-011", "39-334-00-008", "39-333-10-023", "49-141-08-027", "59-024-01-047", "49-062-04-062", "59-024-01-045", "49-232-00-018", "49-202-00-001", "49-084-02-017", "39-354-12-016", "49-084-01-008", "49-021-06-005", "49-141-14-060", "49-052-01-002", "49-084-02-025"];
 
+  // PIN -> the verification list's own street address for that parcel (from the same
+  // "Verification" sheet as CONFIRMED_PINS). Used as a fallback lookup when a PIN doesn't
+  // match any current Jeffco parcel outright (parcels get renumbered/re-platted over time) --
+  // the street address is far more stable than the parcel number, so this recovers dots that
+  // would otherwise be silently missing.
+  var CONFIRMED_PIN_ADDRESS = {"49-341-00-001":"2900 S ESTES ST","49-294-00-001":"12201 MORRISON RD","49-241-17-002":"5290 W ARIZONA AVE","59-032-00-003":"3604 S KIPLING PKWY","49-243-00-010":"6565 W JEWELL AVE","49-344-08-044":"8507 W HAMPDEN AVE","39-352-03-034":"8150 W 26TH AVE","59-041-00-010":"10270 W HAMPDEN AVE FRONTAGE RD S","49-353-00-009":"3490 S CARR ST","59-032-00-009":"3704 S KIPLING PKWY","49-134-06-010":"875 S SHERIDAN BLVD","49-241-20-002":"1355 S SHERIDAN BLVD","59-041-00-002":"3535 S KIPLING PKWY","49-134-06-009":"5260 W OHIO AVE","59-032-00-007":"3636 S INDEPENDENCE ST","59-041-00-004":"10311 W HAMPDEN AVE FRONTAGE RD S","39-364-06-158":"1605 SHERIDAN BLVD","49-261-03-001":"7410 W WARREN CIR","49-084-00-034":"11900 W CEDAR DR","49-084-00-036":"11900 W CEDAR DR","49-062-04-043":"14255 W COLFAX DR","49-352-01-001":"3101 S WADSWORTH BLVD","49-173-07-013":"12850 W ALAMEDA PKWY","49-022-01-002":"1435 WADSWORTH BLVD","39-354-20-001":"1612 TELLER ST","39-322-16-001":"2010 YOUNGFIELD ST","49-152-02-107":"460 S KIPLING ST","49-354-07-169":"3280 S WADSWORTH BLVD","49-334-00-005":"3395 S KIPLING PKWY","59-024-01-014":"3940 S TELLER ST","49-021-11-010":"1363 PIERCE ST","49-104-10-202":"8787 W ALAMEDA AVE","39-333-01-001":"1975 OAK ST","39-343-01-019":"9201 W COLFAX AVE","49-131-03-045":"5810 W ALAMEDA AVE","49-151-99-002":"8545 W DAKOTA AVE","49-083-00-012":"12540 W CEDAR DR","39-364-06-077":"5280 W 17TH AVE","49-054-13-114":"11907 W 6TH AVE","49-054-13-034":"11911 W 6TH AVE FRONTAGE RD","49-044-17-002":"10610 W 7TH PL","49-042-02-005":"11200 W COLFAX AVE","49-031-00-076":"1091 CARR ST","49-112-12-033":"105 WADSWORTH BLVD","49-141-09-002":"7260 W ALASKA DR","49-234-00-007":"7575 W JEWELL AVE","49-023-00-032":"8101 W 9TH AVE","49-023-00-031":"8173 W 9TH AVE","49-252-03-106":"6356 HAWTHORN LN","49-082-07-311":"12405 W 2ND PL","49-083-05-026":"12477 W CEDAR DR","49-141-14-008":"530 S SAULSBURY ST","49-351-01-018":"3140 S WADSWORTH BLVD","49-141-05-003":"325 S SAULSBURY ST","49-033-00-009":"720 KIPLING ST","49-143-02-001":"7791 W MISSISSIPPI AVE","49-081-04-008":"200 UNION BLVD","49-171-07-002":"12180 W ALAMEDA PKWY","49-014-13-022":"680 HARLAN ST","49-353-06-003":"3355 S WADSWORTH BLVD","49-021-05-006":"7590 W COLFAX AVE","39-342-06-009":"2290 KIPLING ST","49-054-12-007":"693 URBAN CT","49-343-10-067":"9858 W GIRTON DR","49-083-01-411":"12265 W BAYAUD AVE","49-212-13-001":"1555 S KIPLING PKWY","49-084-02-003":"145 UNION BLVD","59-022-04-010":"7853 W MANSFIELD PKWY","49-023-00-034":"8091 W 9TH AVE","49-012-04-004":"1450 LAMAR ST","49-062-04-045":"14105 W COLFAX DR","49-194-09-013":"13922 W UTAH AVE","49-282-02-002":"11058 W JEWELL AVE","49-044-20-006":"10488 W 6TH PL","49-031-00-014":"8790 W COLFAX AVE","49-083-00-013":"12520 W CEDAR DR","49-083-06-007":"12580 W CEDAR DR","49-084-00-020":"12430 W CEDAR DR","49-352-02-001":"3151 S WADSWORTH BLVD","49-113-13-004":"212 S CARR ST","49-113-13-026":"211 S BALSAM ST","49-113-13-027":"212 S BALSAM ST","39-293-00-029":"2700 YOUNGFIELD ST","49-141-11-035":"414 S SAULSBURY ST","49-242-00-009":"1450 S PIERCE ST","39-331-00-017":"2513 KIPLING ST","49-081-04-001":"390 UNION BLVD","49-353-05-009":"3245 S WADSWORTH BLVD","49-023-00-022":"8201 W 9TH AVE","49-353-05-004":"3215 S WADSWORTH BLVD","49-081-04-002":"360 UNION BLVD","39-353-15-007":"8275 W COLFAX AVE","39-354-04-003":"1931 VANCE ST","49-081-02-002":"453 VAN GORDON ST","39-331-13-003":"2201 KIPLING ST","49-084-00-011":"190 S TAFT ST","49-142-04-028":"7740 W ALAMEDA AVE","39-342-05-017":"2440 KIPLING ST","39-344-18-005":"8525 W COLFAX AVE","49-021-02-009":"1475 REED ST","49-331-01-002":"2604 S MILLER DR","39-364-12-008":"5505 W COLFAX AVE","49-084-02-002":"146 VAN GORDON ST","49-233-17-009":"1733 S WADSWORTH BLVD","49-114-06-136":"90 S WADSWORTH BLVD","49-011-00-132":"5725 W 11TH AVE","39-363-06-001":"1700 KENDALL ST","49-022-01-007":"1465 WADSWORTH BLVD","39-363-05-111":"6451 W COLFAX AVE","49-284-03-081":"2595 S LEWIS WAY","49-033-14-024":"651 GARRISON ST","49-131-99-003":"5610 W ALAMEDA AVE","49-142-03-002":"777 S WADSWORTH BLVD","59-022-03-016":"7844 W MANSFIELD PKWY","49-012-13-051":"1230 PIERCE ST","39-342-06-026":"9786 W 22ND PL","49-022-11-012":"1325 ZEPHYR ST","49-231-01-093":"1110 S REED ST","49-012-13-003":"1203 LAMAR ST","49-012-13-111":"1183 LAMAR ST","49-334-03-001":"3222 S NEWCOMBE ST","49-353-06-006":"3345 S WADSWORTH BLVD","49-123-21-007":"6101 W ALAMEDA AVE","49-023-14-003":"7701 W 6TH AVE FRONTAGE RD","49-043-00-001":"809 QUAIL ST","39-342-07-007":"9900 W 21ST AVE","49-022-14-008":"1289 YUKON ST","49-042-99-007":"11161 W 12TH AVE","39-353-00-016":"1613 ALLISON ST","49-144-02-189":"759 S REED CT","49-031-00-028":"8550 W 14TH AVE","49-012-12-026":"6000 W 13TH AVE","49-081-03-012":"375 UNION BLVD","49-131-99-001":"375 S DEPEW ST","39-363-05-141":"6501 W COLFAX AVE","49-082-02-006":"351 ZANG ST","39-364-03-014":"1800 FENTON ST","49-231-00-031":"1420 S WADSWORTH BLVD","49-043-02-005":"928 QUAIL ST","49-021-10-018":"7095 W 13TH AVE","49-023-14-007":"7727 W 6TH AVE FRONTAGE RD","49-141-01-016":"7071 W ALASKA DR","39-343-02-054":"9393 W COLFAX AVE","49-274-16-016":"8854 W LA SALLE AVE","49-262-00-004":"7800 W JEWELL AVE","39-343-02-056":"9485 W COLFAX AVE","49-084-06-001":"180 S UNION BLVD","49-014-00-002":"679 SHERIDAN BLVD","49-172-03-007":"12587 W DAKOTA AVE","39-353-17-002":"7833 W COLFAX AVE","49-103-12-002":"230 S HOLLAND ST","59-012-00-012":"3800 S PIERCE ST","49-354-06-001":"3200 S WADSWORTH BLVD","49-012-03-012":"1440 KENDALL ST","49-124-23-004":"5755 W ALAMEDA AVE","49-031-00-012":"8646 W COLFAX AVE","39-351-00-063":"2180 WADSWORTH BLVD","39-351-00-064":"2180 WADSWORTH BLVD","39-353-99-013":"1630 S CARR ST","39-353-99-011":"1630 CARR ST","49-033-01-001":"9200 W 10TH AVE","39-354-12-020":"1692 WADSWORTH BLVD","49-062-03-040":"14347 W COLFAX AVE","49-083-00-014":"12500 W CEDAR DR","49-141-10-039":"440 S TELLER ST","49-114-06-122":"259 S TELLER ST","49-042-04-001":"11354 W 13TH AVE","49-011-18-001":"1240 HARLAN ST","49-272-99-002":"9600 W JEWELL AVE","39-364-03-016":"1910 FENTON ST","49-354-07-164":"7201 W HAMPDEN AVE","49-343-10-063":"9814 W GIRTON DR","49-014-00-017":"627 SHERIDAN BLVD","49-024-04-001":"7310 W 10TH AVE","49-024-04-002":"7305 W 9TH PL","49-041-20-001":"10600 W COLFAX AVE","39-342-06-017":"9905 W 21ST AVE","49-214-05-001":"10555 W JEWELL AVE","49-141-14-151":"658 S REED CT","49-331-01-003":"2615 S MILLER DR","49-214-04-001":"10555 W JEWELL AVE","49-242-00-006":"1180 S PIERCE ST","49-173-08-287":"12641 W MISSISSIPPI AVE","39-354-11-021":"1601 REED ST","49-231-11-019":"1490 S REED ST","39-364-09-009":"5885 W COLFAX AVE","49-032-00-074":"9600 W COLFAX AVE","49-042-00-031":"11000 W COLFAX AVE","49-022-01-005":"7700 W COLFAX AVE","49-022-10-001":"1400 AMMONS ST","49-043-02-004":"885 PARFET ST","49-114-06-125":"7301 W ALAMEDA AVE","39-353-17-001":"7999 W COLFAX AVE","49-042-00-018":"1208 QUAIL ST","39-344-18-010":"1590 DOVER ST","49-054-01-065":"896 TABOR ST","49-083-05-023":"12687 W CEDAR DR","49-031-01-004":"8725 W 14TH AVE","49-122-18-031":"207 INGALLS ST","49-083-06-001":"13050 W CEDAR DR","49-021-21-003":"1070 TELLER ST","49-012-07-001":"6700 W COLFAX AVE","49-021-04-003":"1410 VANCE ST","49-262-01-002":"2033 S WADSWORTH BLVD","39-343-08-008":"1620 KIPLING ST","49-271-99-001":"1978 S GARRISON ST","49-021-01-014":"6900 W COLFAX AVE","49-104-10-080":"9079 W ALAMEDA AVE","49-172-09-001":"735 S XENON CT","49-022-03-008":"8000 W COLFAX AVE","49-071-00-009":"13300 W 6TH AVE FRONTAGE RD","49-054-01-061":"825 SIMMS ST","49-012-04-005":"6300 W COLFAX AVE","49-024-99-001":"7420 W 8TH PL","49-234-00-002":"1858 S WADSWORTH BLVD","49-012-01-007":"1430 INGALLS ST","49-084-00-021":"12410 W CEDAR DR","59-021-04-017":"7260 W JEFFERSON AVE","39-354-11-020":"1615 REED ST","49-043-01-002":"938 QUAIL ST","49-232-01-005":"7605 W ARIZONA AVE","39-334-02-001":"10530 W 20TH AVE","49-191-06-005":"1187 S BEECH DR","49-034-00-014":"915 CARR ST","39-363-05-101":"1750 PIERCE ST","39-342-06-019":"9885 W 21ST AVE","49-171-00-001":"11907 W ALAMEDA PKWY","49-011-00-133":"5855 W 11TH AVE","49-111-00-025":"7456 W 5TH AVE","49-331-02-001":"10025 W DARTMOUTH AVE","39-343-08-028":"1576 KIPLING ST","39-352-18-011":"2049 WADSWORTH BLVD","39-363-05-128":"1640 PIERCE ST","49-042-04-034":"1211 QUAIL ST","49-334-00-008":"3101 S KIPLING ST","39-354-04-011":"1990 WADSWORTH BLVD","49-031-00-074":"1107 CARR ST","49-131-01-180":"5500 W ALAMEDA AVE","49-281-02-008":"10808 W JEWELL AVE","49-121-00-023":"5457 W 4TH AVE","49-041-03-003":"10500 W COLFAX AVE","49-111-00-021":"7475 W 5TH AVE","49-022-11-015":"1360 ALLISON ST","39-363-05-134":"1795 KENDALL ST","39-331-00-016":"2563 KIPLING ST","49-103-13-004":"9277 W ALAMEDA AVE","49-353-05-018":"3285 S WADSWORTH BLVD","49-173-07-002":"12880 W ALAMEDA PKWY","49-031-00-019":"8755 W 14TH AVE","39-364-15-018":"5201 W COLFAX AVE","49-082-02-001":"555 ZANG ST","49-024-05-001":"950 WADSWORTH BLVD","49-022-02-007":"7950 W COLFAX AVE","49-012-10-019":"1315 LAMAR ST","39-342-04-025":"9990 W 26TH AVE","49-043-00-016":"11225 W 6TH AVE FRONTAGE RD","49-031-00-001":"8400 W COLFAX AVE","39-293-00-026":"2800 YOUNGFIELD ST","39-363-05-112":"6553 W COLFAX AVE","49-082-01-001":"599 WRIGHT ST","39-353-18-020":"1580 YARROW ST","39-354-15-003":"7101 W COLFAX AVE","49-172-00-001":"12305 W DAKOTA AVE","49-112-10-012":"100 CARR ST","49-083-06-006":"12640 W CEDAR DR","49-021-20-001":"7240 W 12TH AVE","49-012-11-012":"1300 LAMAR ST","49-031-01-002":"8745 W 14TH AVE","49-143-02-020":"1075 S YUKON ST","49-033-99-001":"9700 W 8TH AVE","49-231-00-033":"1450 S WADSWORTH BLVD","49-084-00-012":"220 S TAFT ST","39-354-12-022":"7475 W COLFAX AVE","49-031-00-048":"1391 CARR ST","49-343-01-001":"9227 W DARTMOUTH PL","49-144-02-190":"7217 W KENTUCKY DR","49-084-00-022":"12340 W CEDAR DR","49-143-03-034":"1057 S WADSWORTH BLVD","49-111-00-014":"550 WEBSTER ST","49-081-01-004":"12100 W 6TH AVE FRONTAGE RD","49-234-06-014":"7570 W FLORIDA AVE","49-174-06-019":"12364 W ALAMEDA PKWY","49-171-08-001":"12340 W ALAMEDA PKWY","49-281-02-007":"10895 W ASBURY AVE","49-171-00-004":"345 S UNION BLVD","49-034-10-003":"9195 W 6TH AVE FRONTAGE RD","49-173-05-002":"13013 W ALAMEDA PKWY","49-014-99-015":"5801 W 6TH AVE FRONTAGE RD","49-042-01-022":"1410 QUAIL ST","49-031-00-071":"1205 CARR ST","49-343-10-064":"9880 W GIRTON DR","49-164-14-012":"10700 W EXPOSITION DR","49-043-02-003":"883 PARFET ST","49-014-14-001":"5567 W 6TH AVE FRONTAGE RD","39-364-08-001":"1660 FENTON ST","49-353-05-016":"3245 S WADSWORTH BLVD","49-031-00-103":"1320 EVERETT CT","49-022-14-005":"7755 W 12TH AVE","49-083-05-001":"148 S ZANG WAY","49-331-01-007":"10107 W DARTMOUTH PL","49-031-03-010":"1375 EVERETT CT","49-174-06-004":"856 S VAN GORDON CT","49-302-01-008":"14099 W JEWELL AVE","49-171-05-010":"12043 W ALAMEDA PKWY","49-171-09-001":"12160 W NEVADA DR","49-171-08-004":"12153 W NEVADA DR","49-191-07-001":"13206 W GREEN MOUNTAIN DR","49-083-06-005":"12660 W CEDAR DR","39-353-14-001":"8220 W 16TH PL","39-353-19-002":"8101 W COLFAX AVE","40-014-10-007":"801 DENVER WEST CO MILLS BLVD","49-022-15-014":"1221 YARROW ST","49-311-01-037":"2950 BEAR CREEK BLVD","49-173-02-003":"12791 W ALAMEDA PKWY","49-041-01-011":"10140 W COLFAX AVE","49-334-00-002":"9800 W DARTMOUTH PL","39-363-05-107":"6579 W COLFAX AVE","49-114-06-212":"7551 W ALAMEDA AVE","49-144-02-191":"7391 W KENTUCKY DR","49-014-01-005":"5340 W 10TH AVE","49-272-00-001":"9260 W JEWELL AVE","49-233-17-020":"1729 S WADSWORTH BLVD","49-014-00-016":"5255 W 6TH AVE FRONTAGE RD","39-344-18-009":"1550 DOVER ST","49-114-15-037":"7063 W ALAMEDA AVE","49-084-00-019":"12450 W CEDAR DR","49-062-03-027":"14401 W COLFAX AVE","39-333-99-003":"1555 Quail St","49-084-04-002":"140 S UNION BLVD","49-141-06-002":"325 S TELLER ST","49-144-03-002":"823 S VANCE ST","49-031-13-006":"8585 W 14TH AVE","39-334-11-021":"10575 W COLFAX AVE","39-363-05-100":"6760 W 19TH PL","49-014-11-008":"747 SHERIDAN BLVD","49-131-01-177":"440 S DEPEW ST","49-061-11-094":"1315 COLORADO MILLS PKWY","49-083-00-002":"12755 W CEDAR DR","49-141-06-008":"370 S VANCE ST","49-354-07-001":"7350 W EASTMAN PL","49-084-00-017":"195 S UNION BLVD","49-043-00-010":"11100 W 8TH AVE","49-353-05-010":"3265 S WADSWORTH BLVD","49-012-03-014":"1405 JAY ST","49-023-14-009":"7711 W 6TH AVE FRONTAGE RD","49-131-03-017":"333 S EATON ST","49-014-01-003":"935 SHERIDAN BLVD","49-172-05-011":"491 S YOUNGFIELD CT","49-141-05-002":"316 S TELLER ST","49-343-10-001":"3364 S KIPLING PKWY","49-104-12-014":"241 S CARR ST","49-164-12-001":"998 S MILLER WAY","49-122-19-001":"6085 W 1ST AVE","39-343-03-034":"1575 HOYT ST","49-121-00-003":"5420 W 6TH AVE FRONTAGE RD","39-334-12-001":"10395 W COLFAX AVE","49-344-00-007":"3495 S CARR ST","39-352-99-002":"2201 WADSWORTH BLVD","49-121-00-048":"5550 W 4TH AVE","39-344-03-066":"1755 DOVER ST","49-141-00-010":"555 S PIERCE ST","49-031-03-009":"1325 EVERETT CT","49-061-11-060":"1350 COLORADO MILLS PKWY","59-022-04-007":"7877 W MANSFIELD PKWY","39-363-05-099":"6795 W 19TH PL","49-022-01-006":"7800 W COLFAX AVE","49-084-02-004":"143 UNION BLVD","49-023-14-012":"7721 W 6TH AVE FRONTAGE RD","49-012-03-011":"1430 KENDALL ST","59-021-03-001":"3500 S WADSWORTH BLVD","49-211-06-006":"1535 S KIPLING PKWY","49-043-01-001":"1050 QUAIL ST","59-021-01-006":"3898 S TELLER ST","49-023-00-009":"7830 W 10TH AVE","49-172-02-008":"434 S WRIGHT ST","49-044-20-002":"10701 W 6TH AVE FRONTAGE RD","49-172-02-004":"484 S WRIGHT ST","39-354-15-002":"1560 TELLER ST","49-023-00-122":"909 WADSWORTH BLVD","49-144-02-192":"7324 W OHIO AVE","49-213-00-001":"10815 W JEWELL AVE","49-173-05-011":"13151 W ALAMEDA PKWY","49-022-08-005":"1390 BRENTWOOD ST","49-262-14-033":"2255 S WADSWORTH BLVD","39-353-19-001":"8125 W COLFAX AVE","49-213-11-001":"10555 W JEWELL AVE","49-353-06-002":"3333 S WADSWORTH BLVD","39-333-00-008":"11500 W 20TH AVE","49-172-08-001":"12211 W ALAMEDA PKWY","49-084-03-007":"12105 W CEDAR DR","49-081-03-013":"360 VAN GORDON ST","39-342-04-015":"9892 W 26TH AVE","39-344-18-024":"1672 DOVER ST","49-112-01-002":"7625 W 5TH AVE","39-343-10-002":"9620 W 16TH AVE","39-343-09-008":"9625 W 16TH AVE","49-141-03-007":"650 S WADSWORTH BLVD","49-081-02-001":"533 VAN GORDON ST","49-031-02-012":"8989 W 14TH AVE","49-041-00-009":"1315 NELSON ST","49-081-02-004":"12205 W 2ND PL","49-353-02-123":"8357 W FLOYD AVE","49-132-01-008":"6201 W NEVADA PL","49-043-04-004":"605 PARFET ST","49-022-13-029":"1330 YUKON ST","39-333-07-014":"1570 ROUTT ST","39-343-11-006":"9629 W COLFAX AVE","49-033-00-002":"920 KIPLING ST","49-021-11-019":"1301 PIERCE ST","39-333-99-002":"11171 W 17TH AVE","49-173-00-005":"13055 W MISSISSIPPI CT","49-083-05-028":"133 S VAN GORDON ST","49-083-05-029":"133 S VAN GORDON ST","49-343-04-033":"9803 W GIRTON DR","49-194-11-002":"13701 W JEWELL AVE","49-043-02-009":"11005 W 8TH AVE","49-353-06-007":"3497 S WADSWORTH BLVD","49-043-04-001":"755 PARFET ST","49-262-14-032":"7700 W WOODARD DR","49-121-00-057":"345 SHERIDAN BLVD","49-211-04-001":"10250 W MISSISSIPPI AVE","49-263-01-155":"2525 S WADSWORTH BLVD","39-343-09-007":"1606 IRIS ST","49-231-00-037":"1360 S WADSWORTH BLVD","49-234-00-003":"1852 S WADSWORTH BLVD","39-354-15-001":"7130 W 16TH AVE","39-283-03-002":"11200 W 32ND AVE","49-011-06-031":"1411 FENTON ST","49-113-14-047":"8015 W ALAMEDA AVE","49-083-04-002":"315 ZANG ST","49-114-15-038":"7098 W CEDAR AVE","49-103-12-004":"9305 W ALAMEDA SERVICE RD","49-084-01-013":"255 S ROUTT ST","39-344-18-066":"1675 CARR ST","49-104-13-001":"8405 W ALAMEDA AVE","39-364-08-006":"1655 EATON ST","39-334-11-027":"10565 W COLFAX AVE","49-022-25-017":"7655 W 10TH AVE","39-363-05-140":"6615 W COLFAX AVE","49-262-01-186":"7750 W JEWELL AVE","49-083-01-015":"12575 W BAYAUD AVE","49-084-01-014":"11700 W 2ND PL","49-012-11-014":"1325 JAY ST","49-083-06-004":"12860 W CEDAR DR","49-171-05-004":"12053 W ALAMEDA PKWY","49-032-00-076":"1350 INDEPENDENCE ST","49-122-18-032":"115 INGALLS ST","49-214-08-097":"10001 W JEWELL AVE","49-172-03-043":"435 S WRIGHT ST","49-231-02-001":"1175 S REED ST","49-141-09-073":"7337 W ALASKA DR","49-124-01-010":"95 S SHERIDAN BLVD","49-083-01-413":"155 VAN GORDON ST","49-173-01-004":"12750 W ALAMEDA PKWY","49-082-02-005":"255 ZANG ST","39-344-14-005":"9151 W COLFAX AVE","49-111-14-019":"160 WADSWORTH BLVD","49-043-02-006":"810 QUAIL ST","49-021-17-027":"1220 WADSWORTH BLVD","49-042-03-007":"11500 W SECURITY AVE","49-032-05-022":"9720 W COLFAX AVE","49-034-10-001":"610 GARRISON ST","49-034-10-002":"608 GARRISON ST","49-081-03-014":"12055 W 2ND PL","49-043-01-003":"870 PARFET ST","49-172-04-041":"455 S YOUNGFIELD CT","49-172-04-040":"455 S YOUNGFIELD CT","49-172-03-005":"485 S WRIGHT ST","49-172-03-004":"465 S WRIGHT ST","49-172-03-003":"445 S WRIGHT ST","39-342-04-002":"2561 IRIS ST","49-081-01-006":"405 URBAN ST","49-132-01-032":"363 S HARLAN ST","49-132-01-029":"363 S HARLAN ST","49-043-02-001":"833 PARFET ST","49-141-03-010":"670 S WADSWORTH BLVD","49-083-06-002":"12990 W CEDAR DR","49-132-01-028":"393 S HARLAN ST","49-132-01-031":"393 S HARLAN ST","39-324-12-024":"12203 W COLFAX AVE","39-352-05-055":"2121 WADSWORTH BLVD","59-021-04-013":"3605 S TELLER ST","39-333-10-011":"1665 PIERSON ST","49-083-06-003":"12980 W CEDAR DR","49-121-00-099":"5275 W 1ST AVE","49-041-02-003":"10310 W COLFAX AVE","49-104-10-203":"291 S CAMPUS DR","49-243-00-005":"6465 W JEWELL AVE","49-224-19-026":"8983 W JEWELL AVE","49-114-00-006":"6980 W CEDAR AVE","49-141-08-023":"444 S WADSWORTH BLVD","49-084-02-019":"50 VAN GORDON ST","59-024-01-011":"3950 S WADSWORTH BLVD","49-262-01-011":"8000 W JEWELL AVE","49-103-00-004":"260 S KIPLING ST","49-044-00-002":"715 KIPLING ST","59-021-02-008":"3595 S TELLER ST","59-021-02-030":"3595 TELLER ST","59-021-01-020":"7050 W HAMPDEN AVE","49-042-04-029":"11500 W 13TH AVE","49-014-01-006":"5255 W 9TH AVE","49-083-05-025":"12567 W CEDAR DR","49-131-00-007":"5480 W ALAMEDA AVE","49-082-01-140":"455 WRIGHT ST","49-131-03-053":"5800 W ALAMEDA AVE","49-144-05-020":"1000 S WADSWORTH BLVD","49-143-03-035":"7655 W MISSISSIPPI AVE","49-142-04-025":"470 S ALLISON PKWY","49-123-16-017":"285 S JAY ST","49-063-99-003":"780 DENVER WEST CO MILLS BLVD","49-114-00-010":"6803 W ALAMEDA AVE","39-342-03-028":"2001 HOYT ST","39-333-10-021":"11001 W 15TH PL","39-332-99-003":"10901 W 20TH AVE","49-043-00-019":"11494 W 8TH AVE","49-031-02-010":"8805 W 14TH AVE","39-333-10-015":"11155 W 15TH PL","49-141-06-009":"7350 W ALAMEDA AVE","49-353-04-209":"3355 S YARROW ST","49-141-07-003":"384 S WADSWORTH BLVD","49-142-01-131":"555 S ALLISON PKWY","49-034-10-004":"9197 W 6TH AVE FRONTAGE RD","49-054-13-115":"11909 W 6TH AVE","39-333-02-001":"11200 W 20TH AVE","49-043-00-018":"11305 W 6TH AVE FRONTAGE RD","59-021-01-010":"7112 W JEFFERSON AVE","49-162-14-001":"11025 GLENNON DR","49-032-01-008":"1435 GARRISON ST","49-112-04-016":"441 WADSWORTH BLVD","49-354-05-003":"3190 S WADSWORTH BLVD","49-173-99-001":"12612 W ALAMEDA PKWY","49-011-04-010":"1432 DEPEW ST","39-343-08-016":"9797 W COLFAX AVE","49-124-27-013":"245 S SHERIDAN BLVD","49-233-14-003":"8201 W JEWELL AVE","49-131-11-009":"5300 W CENTER AVE","49-043-04-002":"11011 W 6TH AVE FRONTAGE RD","39-364-99-001":"1685 EATON ST","39-331-00-019":"10500 W 25TH AVE","49-043-05-006":"740 SIMMS ST","49-353-05-011":"3225 S WADSWORTH BLVD","59-021-04-016":"7240 W JEFFERSON AVE","59-021-04-014":"3840 S WADSWORTH BLVD","59-022-03-015":"7860 W MANSFIELD PKWY","49-231-11-001":"1450 S REED ST","39-353-11-022":"1660 ALLISON ST","49-083-01-013":"12265 W BAYAUD AVE","49-012-06-009":"1455 NEWLAND ST","59-024-01-013":"3910 S TELLER ST","49-233-17-022":"7667 W JEWELL AVE","49-114-06-140":"98 WADSWORTH BLVD","49-012-13-052":"1160 PIERCE ST","49-082-02-002":"421 ZANG ST","49-233-17-021":"7677 W JEWELL AVE","49-231-99-002":"1295 S REED ST","39-343-02-057":"1600 HOYT ST","39-343-02-058":"1600 HOYT ST","49-021-08-027":"7272 W 14TH AVE","49-191-07-024":"13198 W GREEN MOUNTAIN DR","49-081-01-003":"575 UNION BLVD","49-174-23-001":"12250 W KENTUCKY DR","49-164-12-025":"945 S KIPLING PKWY","49-083-04-001":"13015 W 2ND PL","49-271-03-029":"8701 W WOODARD DR","49-171-05-002":"12031 W ALAMEDA PKWY","49-141-10-041":"7156 W ALASKA DR","49-142-01-134":"433 S ALLISON PKWY","49-153-00-002":"885 S GARRISON ST","49-081-03-008":"355 UNION BLVD","49-141-05-004":"7171 W ALASKA DR","59-021-02-026":"7393 W JEFFERSON AVE","39-352-05-042":"2275 WADSWORTH BLVD","49-014-14-002":"5495 W 6TH AVE FRONTAGE RD","49-142-01-132":"333 S ALLISON PKWY","49-013-99-002":"6800 W 10TH AVE","49-012-13-043":"1210 PIERCE ST","39-321-99-005":"2300 URBAN ST","49-042-06-008":"11158 W COLLINS AVE","39-314-04-009":"13772 DENVER WEST PKWY","49-222-00-004":"1350 S HOYT ST","39-344-17-012":"1520 DUDLEY ST","49-014-13-023":"620 HARLAN ST","49-173-00-002":"13165 W OHIO AVE","49-272-01-013":"9998 W JEWELL AVE","49-063-01-060":"14500 W COLFAX AVE","49-024-00-003":"940 WADSWORTH BLVD","59-021-04-012":"7220 W JEFFERSON AVE","49-044-20-005":"10777 W 6TH AVE FRONTAGE RD","49-084-00-005":"190 S UNION BLVD","49-142-03-003":"777 S YARROW ST","39-363-05-109":"6575 W COLFAX AVE","49-233-00-013":"7777 W JEWELL AVE","49-141-04-002":"679 S REED CT","59-021-01-018":"6900 W JEFFERSON AVE","49-041-00-002":"10750 W COLFAX AVE","39-334-00-006":"10200 W 20TH AVE","49-141-06-005":"7313 W ALASKA DR","39-344-18-089":"1625 CARR ST","49-173-06-001":"12801 W ALAMEDA PKWY","49-084-02-022":"34 VAN GORDON ST","49-124-27-008":"145 S SHERIDAN BLVD","49-124-27-012":"225 S SHERIDAN BLVD","49-013-05-094":"6305 W 6TH AVE FRONTAGE RD","49-292-00-002":"12900 W UTAH AVE","39-353-11-013":"1655 YARROW ST","49-101-07-001":"9050 W 6TH AVE FRONTAGE RD","49-272-00-010":"2200 S KIPLING ST","49-081-04-004":"274 UNION BLVD","49-203-00-001":"1725 S WRIGHT ST","49-102-99-001":"75 INDEPENDENCE ST","49-061-11-103":"14500 W COLFAX AVE","49-131-03-008":"323 S EATON ST","49-042-07-005":"11308 W COLLINS AVE","39-341-00-002":"8605 W 23RD AVE","49-061-11-055":"1400 COLORADO MILLS PKWY","49-342-00-007":"9601 W DARTMOUTH PL","49-301-15-014":"2200 S COORS ST","49-062-03-039":"14225 W COLFAX AVE","49-013-00-038":"6000 W 9TH AVE","59-021-01-009":"7110 W JEFFERSON AVE","39-363-05-116":"1651 KENDALL ST","49-114-00-005":"80 S TELLER ST","49-233-99-002":"1805 S BALSAM ST","59-021-01-008":"7114 W JEFFERSON AVE","49-131-00-056":"580 S HARLAN ST","49-043-00-014":"11595 W 6TH AVE FRONTAGE RD","39-313-01-065":"14045 DENVER WEST CIR","59-021-01-023":"7180 W HAMPDEN AVE","49-221-99-001":"1263 S DUDLEY ST","49-141-04-001":"620 S VANCE ST","39-333-11-003":"10785 W COLFAX AVE","49-141-02-006":"550 S WADSWORTH BLVD","49-043-02-002":"875 PARFET ST","49-084-02-007":"141 UNION BLVD","49-081-03-004":"255 UNION BLVD","49-274-18-001":"8550 W VASSAR DR","49-234-18-027":"1884 S WADSWORTH BLVD","49-084-03-001":"12136 W BAYAUD AVE","49-354-08-118":"3440 S VANCE ST","49-044-20-008":"10455 W 6TH AVE FRONTAGE RD","49-101-00-001":"8425 W 1ST AVE","49-011-13-016":"1205 BENTON ST","49-032-99-004":"1385 INDEPENDENCE ST","49-011-06-032":"5830 W COLFAX AVE","49-232-01-006":"7950 W MISSISSIPPI AVE","59-021-01-025":"7175 W JEFFERSON AVE","39-334-99-004":"1575 KIPLING ST","49-042-04-030":"1250 SIMMS ST","49-043-04-003":"645 PARFET ST","49-031-02-013":"9160 W COLFAX AVE","49-042-06-010":"10810 W COLLINS AVE","49-124-99-002":"200 S HARLAN ST","49-173-05-004":"13111 W ALAMEDA PKWY","49-211-06-001":"1545 S KIPLING PKWY","49-044-00-008":"10301 W 6TH AVE FRONTAGE RD","49-043-02-007":"11177 W 8TH AVE","49-043-02-010":"11177 W 8TH AVE","49-113-14-053":"7825 W ALAMEDA AVE","39-314-04-011":"13952 DENVER WEST PKWY","49-033-10-002":"700 KIPLING ST","49-033-10-003":"690 KIPLING ST","49-242-00-012":"1401 S KENDALL ST","49-121-00-098":"5301 W 1ST AVE","49-081-01-002":"445 UNION BLVD","49-141-08-022":"444 S WADSWORTH BLVD","49-012-12-031":"6190 W 13TH AVE","49-033-10-001":"710 KIPLING ST","39-334-11-018":"10403 W COLFAX AVE","49-141-10-055":"7133 W VIRGINIA AVE","49-021-06-045":"1325 VANCE ST","49-132-01-001":"6206 W ALAMEDA AVE","49-141-10-007":"440 S TELLER ST","39-293-00-016":"2850 YOUNGFIELD ST","49-043-04-009":"11111 W 6TH AVE FRONTAGE RD","39-313-02-075":"14023 DENVER WEST PKWY","59-021-01-019":"6950 W JEFFERSON AVE","39-364-10-015":"5701 W COLFAX AVE","59-021-01-024":"7190 W HAMPDEN AVE","49-011-06-033":"5885 W 14TH AVE","49-041-03-006":"1430 NELSON ST","39-323-25-018":"12499 W COLFAX AVE","59-024-00-003":"4000 S WADSWORTH BLVD","59-022-04-009":"3605 S WADSWORTH BLVD","49-354-05-004":"7395 W EASTMAN PL","49-062-03-038":"1726 COLE BLVD","49-062-03-034":"1746 COLE BLVD","49-113-13-045":"8383 W ALAMEDA AVE","59-021-04-015":"7201 W MANSFIELD AVE","49-131-03-052":"5800 W ALAMEDA AVE","49-041-21-001":"1420 OAK ST","49-172-08-002":"12345 W ALAMEDA PKWY","39-363-10-021":"1599 INGALLS ST","49-081-03-001":"215 UNION BLVD","49-151-04-086":"8585 W DAKOTA AVE","39-363-05-135":"1710 PIERCE ST","59-022-04-004":"3609 S WADSWORTH BLVD","49-133-13-003":"6301 W MISSISSIPPI AVE","49-141-01-017":"7000 W ALAMEDA AVE","49-012-13-122":"6500 W 13TH AVE","39-354-19-001":"1881 PIERCE ST","49-243-19-026":"6263 W JEWELL AVE","49-142-04-022":"7984 W ALAMEDA AVE","49-021-14-003":"7100 W 13TH AVE","49-084-02-020":"139 UNION BLVD","49-021-17-035":"1288 WADSWORTH BLVD","39-324-12-025":"12345 W COLFAX AVE","59-021-02-003":"7333 W JEFFERSON AVE","49-081-04-003":"300 UNION BLVD","49-272-00-004":"2050 S KIPLING ST","49-083-05-020":"12596 W BAYAUD AVE","49-084-02-010":"137 UNION BLVD","49-032-04-006":"1440 INDEPENDENCE ST","49-354-01-147":"3150 S WADSWORTH BLVD","49-084-05-002":"305 S UNION BLVD","49-141-14-057":"7265 W CENTER AVE","49-012-12-032":"6300 W 13TH AVE","49-353-05-017":"3333 S WADSWORTH BLVD","49-141-06-013":"7350 W Alameda","49-141-09-077":"7310 W ALASKA DR","49-141-09-075":"7310 W ALASKA DR","49-141-14-075":"7245 W Custer Ave","49-021-04-007":"7200 W COLFAX AVE","49-141-06-006":"7245 W ALASKA DR","49-084-01-003":"44 UNION BLVD","49-121-01-002":"599 SHERIDAN BLVD","49-011-15-080":"5495 W 10TH AVE","49-284-03-112":"2555 S LEWIS WAY","59-021-01-026":"7125 W JEFFERSON AVE","59-021-02-027":"7390 W HAMPDEN AVE","39-363-05-136":"1700 PIERCE ST","49-104-10-205":"8525 W ALAMEDA AVE","49-231-99-004":"1275 S TELLER ST","49-012-12-030":"6150 W 13TH AVE","49-171-06-001":"12155 W ALAMEDA PKWY","49-172-02-007":"12300 W DAKOTA AVE","49-262-01-184":"8080 JEWELL AVE","49-354-07-165":"7390 W EASTMAN PL","49-032-01-007":"9300 W COLFAX AVE","49-142-01-128":"445 S ALLISON PKWY","49-022-14-015":"1221 WADSWORTH BLVD","49-141-14-009":"525 S SAULSBURY ST","49-243-12-160":"1811 S HARLAN CIR","49-141-14-052":"500 S REED ST","49-084-02-023":"85 S UNION BLVD","49-141-10-015":"455 S SAULSBURY ST","49-083-01-412":"35 VAN GORDON ST","49-141-09-007":"460 S VANCE ST","49-074-00-006":"13300 W 2ND PL","49-111-14-011":"440 WADSWORTH BLVD","39-334-00-008":"10695 W 17TH AVE","39-333-10-023":"11085 W COLFAX AVE","49-141-08-027":"444 S WADSWORTH BLVD","59-024-01-047":"7205 QUINCY AVE","49-062-04-062":"14500 W COLFAX AVE","59-024-01-045":"3900 S WADSWORTH BLVD","49-232-00-018":"7944 W ARIZONA AVE","49-202-00-001":"13175 W GREEN MOUNTAIN DR","49-084-02-017":"165 S UNION BLVD","39-354-12-016":"7455 W COLFAX AVE","49-084-01-008":"11550 W 2ND PL","49-021-06-005":"1350 WADSWORTH BLVD","49-141-14-060":"7166 W CUSTER AVE","49-052-01-002":"12600 W COLFAX AVE","49-084-02-025":"66 S VAN GORDON ST"};
+
   function chunkArray(arr, size) {
     var out = [];
     for (var i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
     return out;
   }
 
+  // A batch that fails outright (network blocked, request timed out, etc.) gets one retry
+  // after a short pause before being given up on — helps on flakier connections without
+  // masking a genuine, repeated failure.
+  function jeffcoQueryWithRetry(paramsObj, retriesLeft) {
+    retriesLeft = (typeof retriesLeft === 'number') ? retriesLeft : 1;
+    return jeffcoQuery(paramsObj).catch(function (err) {
+      if (retriesLeft > 0) {
+        return new Promise(function (resolve) { setTimeout(resolve, 900); })
+          .then(function () { return jeffcoQueryWithRetry(paramsObj, retriesLeft - 1); });
+      }
+      throw err;
+    });
+  }
+
+  function setConfirmedStatus(html, isError) {
+    var el = document.getElementById('confirmed-status');
+    if (!el) return;
+    el.style.display = '';
+    el.classList.toggle('status-error', !!isError);
+    el.innerHTML = html;
+  }
+
+  function addConfirmedDot(attrs, geometry, viaAddress) {
+    if (!geometry || !geometry.rings || !geometry.rings.length) return false;
+    var latlngs = ringToLatLngs(geometry.rings[0]);
+    var c = centroidOf(latlngs);
+    var dot = L.circleMarker([c.lat, c.lng], {
+      radius: 5, color: '#A6006B', weight: 1.5, fillColor: '#FF2FB0', fillOpacity: 0.95
+    });
+    dot.bindPopup(
+      '<strong>Already confirmed</strong><br>' + (attrs.PRPADDRESS || '(no address on file)') +
+      '<br>PIN ' + attrs.PIN + (attrs.STTGRSAREA ? ' · ' + Math.round(attrs.STTGRSAREA).toLocaleString() + ' sq ft on file' : '') +
+      (viaAddress ? '<br><span style="color:var(--ink-faint);">Matched by address — its parcel number has changed since the verification list was made.</span>' : '') +
+      '<br><span style="color:var(--ink-faint);">From Ken &amp; Myles\' verification list — already on the sandbox map.</span>'
+    );
+    confirmedDots.push({ layer: dot, quadrant: getQuadrantForLatLng(c.lat, c.lng) });
+    return true;
+  }
+
   // Runs automatically on page load — no button, no toggle. Fetches quietly in the
   // background and drops the confirmed-building dots onto the map as soon as they're in.
+  //
+  // Two passes: first by PIN (fast, exact). A PIN can stop matching if the county has since
+  // re-platted/renumbered that parcel — the building didn't disappear, its parcel number just
+  // changed — so anything left unmatched after pass one gets a second try by its recorded street
+  // address instead, which is far more stable over time than a parcel number.
   function loadConfirmedBuildings() {
     if (confirmedLoaded) return;
+    setConfirmedStatus('Loading previously-confirmed buildings (pink dots)&hellip;');
     var batches = chunkArray(CONFIRMED_PINS, 100);
     var matched = 0;
+    var matchedViaAddress = 0;
+    var batchesFailed = 0;
+    var matchedPins = {};
+
+    function finish() {
+      confirmedLoaded = true;
+      confirmedGroup.addTo(map);
+      applyQuadrantFilterToConfirmed();
+      var stillMissing = CONFIRMED_PINS.filter(function (p) { return !matchedPins[p]; });
+      if (stillMissing.length > 0) {
+        console.warn(stillMissing.length + ' confirmed PIN(s) still didn\'t match by PIN or address:', stillMissing);
+      }
+      if (matched === 0) {
+        setConfirmedStatus(
+          'Couldn\'t load the confirmed-building dots — no response came back from Jefferson County\'s data feed. ' +
+          'This usually means the device this is open on can\'t reach it right now (a network/firewall block, or a browser ' +
+          'restricting background requests when the file was opened by double-click). Try reloading, or open this via the ' +
+          'hosted GitHub Pages link instead of the local file (see the README) — that removes the most common cause.',
+          true
+        );
+        return;
+      }
+      var msg = matched.toLocaleString() + ' of ' + CONFIRMED_PINS.length.toLocaleString() + ' confirmed buildings loaded (pink dots)';
+      msg += matchedViaAddress > 0 ? ', ' + matchedViaAddress + ' of those matched by address after their parcel number changed.' : '.';
+      if (stillMissing.length > 0) {
+        msg += ' ' + stillMissing.length + ' couldn\'t be located at all (see the browser console for the list) — worth a manual check.';
+      }
+      var isError = batchesFailed > 0 || stillMissing.length > 0;
+      if (batchesFailed > 0) {
+        msg += ' ' + batchesFailed + ' batch' + (batchesFailed === 1 ? '' : 'es') + ' also failed to load even after a retry — reload the page to try again.';
+      }
+      setConfirmedStatus(msg, isError);
+    }
+
     Promise.all(batches.map(function (batch) {
       var whereIn = batch.map(function (p) { return "'" + String(p).replace(/'/g, "''") + "'"; }).join(',');
-      return jeffcoQuery({
+      return jeffcoQueryWithRetry({
         where: 'PIN IN (' + whereIn + ')',
         outFields: 'PIN,PRPADDRESS,STTGRSAREA',
         returnGeometry: 'true', outSR: '4326', resultRecordCount: '200', f: 'json'
-      }).catch(function () { return null; });
+      }).catch(function () { batchesFailed++; return null; });
     })).then(function (results) {
       results.forEach(function (data) {
         if (!data || !data.features) return;
         data.features.forEach(function (f) {
           var attrs = f.attributes;
-          if (!f.geometry || !f.geometry.rings || !f.geometry.rings.length) return;
-          var latlngs = ringToLatLngs(f.geometry.rings[0]);
-          var c = centroidOf(latlngs);
-          var dot = L.circleMarker([c.lat, c.lng], {
-            radius: 5, color: '#A6006B', weight: 1.5, fillColor: '#FF2FB0', fillOpacity: 0.95
-          });
-          dot.bindPopup(
-            '<strong>Already confirmed</strong><br>' + (attrs.PRPADDRESS || '(no address on file)') +
-            '<br>PIN ' + attrs.PIN + (attrs.STTGRSAREA ? ' · ' + Math.round(attrs.STTGRSAREA).toLocaleString() + ' sq ft on file' : '') +
-            '<br><span style="color:var(--ink-faint);">From Ken &amp; Myles\' verification list — already on the sandbox map.</span>'
-          );
-          confirmedDots.push({ layer: dot, quadrant: getQuadrantForLatLng(c.lat, c.lng) });
-          matched++;
+          if (addConfirmedDot(attrs, f.geometry, false)) {
+            matched++;
+            matchedPins[attrs.PIN] = true;
+          }
         });
       });
-      confirmedLoaded = true;
-      confirmedGroup.addTo(map);
-      applyQuadrantFilterToConfirmed();
-      var missed = CONFIRMED_PINS.length - matched;
-      if (missed > 0) console.warn(missed + ' confirmed PIN(s) did not match a current Jeffco parcel.');
+
+      // Second pass: any PIN Jeffco's live feed didn't recognize gets one more try by its
+      // recorded street address (uppercased/trimmed — Jeffco's own PRPADDRESS field is all-caps,
+      // and the source list isn't perfectly normalized).
+      var addrToPins = {};
+      CONFIRMED_PINS.forEach(function (p) {
+        if (matchedPins[p]) return;
+        var addr = CONFIRMED_PIN_ADDRESS[p];
+        if (!addr) return;
+        var norm = addr.trim().toUpperCase();
+        (addrToPins[norm] = addrToPins[norm] || []).push(p);
+      });
+      var addrList = Object.keys(addrToPins);
+      if (!addrList.length) { finish(); return; }
+
+      var addrBatches = chunkArray(addrList, 100);
+      Promise.all(addrBatches.map(function (batch) {
+        var whereIn = batch.map(function (a) { return "'" + a.replace(/'/g, "''") + "'"; }).join(',');
+        return jeffcoQueryWithRetry({
+          where: 'UPPER(PRPADDRESS) IN (' + whereIn + ')',
+          outFields: 'PIN,PRPADDRESS,STTGRSAREA',
+          returnGeometry: 'true', outSR: '4326', resultRecordCount: '200', f: 'json'
+        }).catch(function () { return null; });
+      })).then(function (addrResults) {
+        var seenAddr = {};
+        addrResults.forEach(function (data) {
+          if (!data || !data.features) return;
+          data.features.forEach(function (f) {
+            var attrs = f.attributes;
+            var norm = (attrs.PRPADDRESS || '').trim().toUpperCase();
+            if (!norm || seenAddr[norm] || !addrToPins[norm]) return; // one dot per address, even if it matches >1 record
+            seenAddr[norm] = true;
+            if (addConfirmedDot(attrs, f.geometry, true)) {
+              matched++;
+              matchedViaAddress++;
+              addrToPins[norm].forEach(function (p) { matchedPins[p] = true; });
+            }
+          });
+        });
+        finish();
+      });
     }).catch(function (err) {
       console.warn('Confirmed-buildings load failed:', err);
+      setConfirmedStatus(
+        'Couldn\'t load the confirmed-building dots (' + (err && err.message ? err.message : 'unknown error') +
+        '). Try reloading, or open this via the hosted GitHub Pages link instead of the local file.',
+        true
+      );
     });
   }
 
@@ -1469,6 +1753,7 @@
   document.getElementById('zoning-btn').addEventListener('click', loadZoningLayer);
 
   initMap();
+  loadCheckedCells();
   renderQuadrants();
   updateDrawStatus();
   loadConfirmedBuildings();
